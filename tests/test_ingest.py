@@ -22,6 +22,39 @@ def test_sentence_cut_has_no_size_cap_and_handles_short_recipes():
         [f"{long} Bake. Serve."], ["Serve."], []]
 
 
+# --- the fixed cut -------------------------------------------------------------
+
+def tokens(text):
+    return len(ingest.wordpiece("bert-base-uncased").encode(text, add_special_tokens=False).ids)
+
+
+LONG = ("Preheat the oven to 350 degrees F. Grease a 9x13 inch baking dish. In a large bowl, whisk "
+        "together the flour, sugar, baking powder and salt. Stir in the milk, melted butter and eggs "
+        "until just combined. Pour into the prepared dish and bake 25 to 30 minutes, until golden.")
+
+
+def test_fixed_cut_makes_windows_of_at_most_56_tokens_and_a_shorter_last_one():
+    [windows] = ingest.fixed_cut([ingest.split_sentences(LONG)], tokens=56, tokenizer="bert-base-uncased")
+    sizes = [tokens(w) for w in windows]
+    assert len(windows) > 1 and max(sizes) <= 56
+    # each window is full: the next word would have pushed it past 56
+    for w, nxt in zip(windows, windows[1:]):
+        assert tokens(f"{w} {nxt.split()[0]}") > 56
+    assert sizes[-1] < 56
+
+
+def test_fixed_cut_only_cuts_between_words_and_ignores_sentence_ends():
+    [windows] = ingest.fixed_cut([ingest.split_sentences(LONG)], tokens=56, tokenizer="bert-base-uncased")
+    assert " ".join(windows) == LONG
+    assert [w.split() for w in windows] == [w.split(" ") for w in windows]  # no split word, no stray space
+    assert not windows[0].endswith(".")  # the first cut lands mid-sentence
+
+
+def test_fixed_cut_keeps_short_recipes_whole_and_handles_empty_ones():
+    assert ingest.fixed_cut([["Heat oil.", "Serve."], []], tokens=56, tokenizer="bert-base-uncased") == [
+        ["Heat oil. Serve."], []]
+
+
 # --- against the test DB: a few Recipes, embeddings stubbed --------------------
 
 RECIPES = [  # title, directions, ingredient lines
@@ -119,19 +152,37 @@ def test_chunk_builds_a_loaded_searchable_partition(recipes):
     assert "chunk_sentence_search_idx" in plan
 
 
-def test_building_one_strategy_leaves_another_strategys_scores_alone(recipes):
+def test_building_one_strategy_leaves_the_others_scores_alone(recipes):
     ingest.run(recipes, ["chunk", "semantic"])
-    params = SearchParams(q="garlic shrimp", strategy="semantic")
+    ingest.run(recipes, ["chunk", "sentence"])
     qvec = recipes.execute("SELECT embedding::text FROM chunk ORDER BY id LIMIT 1").fetchone()[0]
 
     def top10():
-        return ([(c.chunk_id, c.score) for c in retrieval.sparse(recipes, params, 10)],
-                [(c.chunk_id, c.score) for c in retrieval.dense(recipes, params, qvec, 10)])
+        out = []
+        for name in ("semantic", "sentence"):
+            params = SearchParams(q="garlic shrimp", strategy=name)
+            out += [[(c.chunk_id, c.score) for c in retrieval.sparse(recipes, params, 10)],
+                    [(c.chunk_id, c.score) for c in retrieval.dense(recipes, params, qvec, 10)]]
+        return out
 
     before = top10()
-    assert before[0] and before[1]
-    ingest.run(recipes, ["chunk", "sentence"])
+    assert all(before)
+    ingest.run(recipes, ["chunk", "fixed"])
     assert top10() == before
+
+
+def test_fixed_records_its_parameters_and_leaves_the_title_out_of_the_count(recipes):
+    directions = " ".join(["Stir."] * 28)  # 56 tokens: one full window
+    assert tokens(directions) == 56
+    recipes.execute("UPDATE recipe SET title = 'A Very Long Title For Toast', directions = %s WHERE id = 2",
+                    [directions])
+    ingest.run(recipes, ["chunk", "fixed"])
+    assert loaded(recipes, "fixed") is True
+    assert recipes.execute("SELECT method, parameters FROM chunking_strategy WHERE name = 'fixed'").fetchone() == (
+        "fixed", {"tokens": 56, "tokenizer": "bert-base-uncased"})
+    steps = recipes.execute("SELECT content FROM chunk WHERE strategy = 'fixed' AND kind = 'step' "
+                            "AND recipe_id = 2").fetchall()
+    assert steps == [(f"A Very Long Title For Toast\n{directions}",)]
 
 
 def test_a_crashed_build_is_cleaned_up_by_rerunning_it(recipes, monkeypatch):
@@ -171,7 +222,7 @@ def test_chunk_refuses_a_loaded_strategy_and_points_to_drop(recipes):
 
 
 def test_chunk_refuses_an_unknown_name_and_lists_the_known_ones(recipes):
-    with pytest.raises(SystemExit, match="unknown strategy 'foo'; known: semantic, sentence"):
+    with pytest.raises(SystemExit, match="unknown strategy 'foo'; known: fixed, semantic, sentence"):
         ingest.run(recipes, ["chunk", "foo"])
 
 

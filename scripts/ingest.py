@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["psycopg[binary]>=3.2", "numpy>=1.26"]
+# dependencies = ["psycopg[binary]>=3.2", "numpy>=1.26", "tokenizers>=0.19"]
 # ///
 """Load Shengtao/recipe into ParadeDB, then build Chunking strategies from it.
 
@@ -23,12 +23,14 @@ import urllib.request
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 import numpy as np
 import psycopg
 from psycopg import sql
 from psycopg.types.json import Jsonb
+from tokenizers import Tokenizer
 
 ROOT = Path(__file__).resolve().parent.parent
 CSV_PATH = ROOT / "data" / "recipe.csv"
@@ -186,6 +188,32 @@ def sentence_cut(batch: list[list[str]], sentences: int) -> list[list[str]]:
     return [[" ".join(sents[i:i + sentences]) for i in range(0, len(sents), sentences)] for sents in batch]
 
 
+@cache
+def wordpiece(name: str) -> Tokenizer:
+    return Tokenizer.from_pretrained(name)
+
+
+def fixed_cut(batch: list[list[str]], tokens: int, tokenizer: str) -> list[list[str]]:
+    """Greedy windows of whole words, at most `tokens` WordPiece tokens each; sentence ends are
+    ignored. A word is never split, so a single word longer than `tokens` gets a window of its own.
+    WordPiece never merges across whitespace, so a window's count is the sum of its words' counts
+    (true for BERT-style tokenizers only; a byte-level BPE one would need the window re-encoded)."""
+    tok, out = wordpiece(tokenizer), []
+    for sents in batch:
+        words = " ".join(sents).split()
+        sizes = [len(e.ids) for e in tok.encode_batch(words, add_special_tokens=False)] if words else []
+        windows, start, used = [], 0, 0
+        for i, n in enumerate(sizes):
+            if used and used + n > tokens:
+                windows.append(" ".join(words[start:i]))
+                start, used = i, 0
+            used += n
+        if words:
+            windows.append(" ".join(words[start:]))
+        out.append(windows)
+    return out
+
+
 @dataclass(frozen=True)
 class Strategy:
     method: str
@@ -196,6 +224,7 @@ class Strategy:
 # The only place a Chunking strategy is defined. A retune takes a new name.
 STRATEGIES = {
     "semantic": Strategy("semantic", {"min_chars": 80, "max_chars": 400, "break_percentile": 25}, semantic_cut),
+    "fixed": Strategy("fixed", {"tokens": 56, "tokenizer": "bert-base-uncased"}, fixed_cut),
     "sentence": Strategy("sentence", {"sentences": 3}, sentence_cut),
 }
 

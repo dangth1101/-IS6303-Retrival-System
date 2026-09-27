@@ -1133,6 +1133,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "tokenizers" },
 ]
 
 [package.metadata]
@@ -1146,7 +1147,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8" }]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "tokenizers", specifier = ">=0.19" },
+]
 
 [[package]]
 name = "regex"
