@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ApiError, getCategories, getHealth, search, type Health, type Hit, type Method } from './api'
+import { ApiError, getCategories, getHealth, getStrategies, search, type Health, type Hit, type Method, type Strategy } from './api'
 import { Connectors } from './components/Connectors'
 import { CloseIcon, SearchIcon, SlidersIcon } from './components/icons'
 import { ResultColumn, type ColumnState } from './components/ResultColumn'
 import { SettingsDrawer } from './components/SettingsDrawer'
 import { activeChips, DEFAULT_FILTERS, toParams, type Filters } from './filters'
 import { COLUMN_ORDER } from './methods'
+import { useStrategy } from './useStrategy'
 import { useTheme } from './useTheme'
 
 const EXAMPLES: { q: string; hint: string; filters?: Partial<Filters> }[] = [
@@ -29,6 +30,9 @@ export default function App() {
   const [categories, setCategories] = useState<string[]>([])
   const [health, setHealth] = useState<Health | null>(null)
   const [healthError, setHealthError] = useState(false)
+  const [strategies, setStrategies] = useState<Strategy[] | null>(null)
+  const [strategiesError, setStrategiesError] = useState(false)
+  const [strategy, chooseStrategy] = useStrategy(strategies?.map(s => s.name) ?? null)
 
   const controller = useRef<AbortController | null>(null)
   const grid = useRef<HTMLDivElement>(null)
@@ -37,14 +41,16 @@ export default function App() {
   useEffect(() => {
     getCategories().then(setCategories).catch(() => setCategories([]))
     getHealth().then(setHealth).catch(() => setHealthError(true))
+    getStrategies().then(setStrategies).catch(() => setStrategiesError(true))
   }, [])
 
-  const run = useCallback((q: string, f: Filters) => {
+  const run = useCallback((q: string, f: Filters, s: string | null) => {
     q = q.trim()
-    if (!q) return
+    if (!q || !s) return
     controller.current?.abort()
     const ctrl = (controller.current = new AbortController())
     const params = toParams(q, f)
+    params.set('strategy', s)
     setSearchedQuery(q)
     setRunId(id => id + 1)
     setColumns({ sparse: { status: 'loading' }, hybrid: { status: 'loading' }, dense: { status: 'loading' } })
@@ -61,7 +67,12 @@ export default function App() {
 
   const applyFilters = (f: Filters) => {
     setFilters(f)
-    if (searchedQuery) run(query || searchedQuery, f)
+    if (searchedQuery) run(query || searchedQuery, f, strategy)
+  }
+
+  const pickStrategy = (s: string) => {
+    chooseStrategy(s)
+    if (searchedQuery) run(query || searchedQuery, filters, s)
   }
 
   const closeDrawer = useCallback(() => {
@@ -84,9 +95,13 @@ export default function App() {
     ? 'Cannot reach the search API. Start it with uvicorn, then reload this page.'
     : health && health.database !== 'ok'
       ? 'The database is not responding, so no search can run. Start it with docker compose up -d.'
-      : health && health.embedding !== 'ok'
-        ? 'The embedding service is not responding. Sparse still works; Dense and Hybrid will fail until Ollama is running.'
-        : null
+      : strategiesError
+        ? 'Could not load the Chunking strategies, so no search can run. Reload this page.'
+        : strategies?.length === 0
+          ? 'No Chunking strategy is loaded yet, so there is nothing to search. Load one with scripts/ingest.py, then reload this page.'
+          : health && health.embedding !== 'ok'
+            ? 'The embedding service is not responding. Sparse still works; Dense and Hybrid will fail until Ollama is running.'
+            : null
 
   return (
     <>
@@ -119,7 +134,7 @@ export default function App() {
         )}
 
         <form
-          onSubmit={e => { e.preventDefault(); run(query, filters) }}
+          onSubmit={e => { e.preventDefault(); run(query, filters, strategy) }}
           className="flex flex-col gap-3 sm:flex-row"
           role="search"
         >
@@ -134,9 +149,27 @@ export default function App() {
               className="w-full rounded-lg border border-line bg-surface py-3 pr-4 pl-11 text-base text-ink shadow-sm shadow-ink/5 placeholder:text-muted/80 focus:border-hybrid focus:outline-none focus:ring-3 focus:ring-hybrid/15"
             />
           </label>
+          {strategies && strategies.length > 0 && (
+            <div role="group" aria-label="Chunking strategy" className="flex items-center gap-1 self-start rounded-lg border border-line bg-surface p-1 sm:self-stretch">
+              {strategies.map(s => (
+                <button
+                  key={s.name}
+                  type="button"
+                  aria-pressed={strategy === s.name}
+                  onClick={() => pickStrategy(s.name)}
+                  title={`${s.method} chunking: ${Object.entries(s.parameters).map(([k, v]) => `${k} ${v}`).join(', ')}`}
+                  className={`h-full rounded-md px-3 py-1.5 text-sm ${
+                    strategy === s.name ? 'bg-page font-medium text-ink shadow-sm' : 'text-muted hover:text-ink'
+                  }`}
+                >
+                  {s.name}
+                </button>
+              ))}
+            </div>
+          )}
           <button
             type="submit"
-            disabled={!query.trim()}
+            disabled={!query.trim() || !strategy}
             className="rounded-lg bg-ink px-6 py-3 text-base font-semibold text-surface hover:bg-ink/85 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Search
@@ -150,13 +183,14 @@ export default function App() {
               key={ex.q}
               type="button"
               title={ex.hint}
+              disabled={!strategy}
               onClick={() => {
                 const f = { ...DEFAULT_FILTERS, k: filters.k, ...ex.filters }
                 setQuery(ex.q)
                 setFilters(f)
-                run(ex.q, f)
+                run(ex.q, f, strategy)
               }}
-              className="rounded-full border border-line bg-surface px-3 py-1 text-ink-soft hover:border-muted hover:text-ink"
+              className="rounded-full border border-line bg-surface px-3 py-1 text-ink-soft hover:border-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
             >
               {ex.q}
             </button>
@@ -196,6 +230,7 @@ export default function App() {
             <ResultColumn
               key={m}
               method={m}
+              strategy={strategy}
               state={columns[m]}
               k={filters.k}
               ranks={ranks}

@@ -176,8 +176,21 @@ export function SettingsDrawer({ open, filters, categories, health, healthError,
               <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
                 <dt className="text-muted">Database</dt><dd><Status value={health.database} /></dd>
                 <dt className="text-muted">Embedding</dt><dd><Status value={health.embedding} /></dd>
-                <dt className="text-muted">Chunker</dt><dd className="text-ink">{health.chunker}</dd>
-                <dt className="text-muted">Chunks</dt><dd className="tabular-nums text-ink">{health.chunks?.toLocaleString() ?? 'unknown'}</dd>
+                <dt className="text-muted">Chunks</dt>
+                <dd>
+                  {!health.chunks ? <span className="text-muted">unknown</span>
+                    : Object.keys(health.chunks).length === 0 ? <span className="text-danger">No strategy loaded</span>
+                    : (
+                      <ul className="space-y-0.5">
+                        {Object.entries(health.chunks).map(([name, n]) => (
+                          <li key={name} className="flex justify-between gap-4">
+                            <span className="text-ink">{name}</span>
+                            <span className={`tabular-nums ${n === 0 ? 'text-danger' : 'text-ink'}`}>{n.toLocaleString()}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                </dd>
                 <dt className="text-muted">Reranker</dt><dd className="break-all text-ink">{health.reranker} on {health.reranker_device}</dd>
               </dl>
             )}

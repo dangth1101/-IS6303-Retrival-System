@@ -19,17 +19,26 @@ export interface Hit {
 
 export interface SearchResponse {
   method: Method
+  strategy: string
   query: string
   k: number
   took_ms: number
   results: Hit[]
 }
 
+/** A loaded Chunking strategy (GET /strategies). */
+export interface Strategy {
+  name: string
+  method: string
+  parameters: Record<string, unknown>
+  loaded_at: string
+}
+
 export interface Health {
-  chunker?: string
   reranker?: string
   reranker_device?: string
-  chunks?: number
+  /** Chunks per loaded Chunking strategy. */
+  chunks?: Record<string, number>
   database?: string
   embedding?: string
 }
@@ -69,6 +78,8 @@ async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
 
 export const search = (method: Method, params: URLSearchParams, signal?: AbortSignal) =>
   getJson<SearchResponse>(`/search/${method}?${params}`, signal)
+
+export const getStrategies = () => getJson<Strategy[]>('/strategies')
 
 export const getCategories = () => getJson<string[]>('/categories')
 

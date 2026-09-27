@@ -23,6 +23,7 @@ class _Base(BaseModel):
     model_config = ConfigDict(extra="forbid")  # a misspelled filter is an error, not ignored
 
     q: str = Field(min_length=1, max_length=500, description="Search text")
+    strategy: str = Field(description="Chunking strategy to search; see /strategies")
     k: int = Field(config.DEFAULT_K, ge=1, le=config.MAX_K, description="Number of Chunks to return")
     category: list[str] = Field(default_factory=list, description="Repeatable; any of these categories")
     kind: list[Literal["summary", "ingredients", "step"]] = Field(
@@ -40,7 +41,7 @@ SearchParams = create_model(
 
 def where_clause(p: _Base) -> tuple[str, list]:
     """SQL conditions (joined with AND) and their parameters, always scoped to the Chunking strategy."""
-    conds, params = ["strategy = %s"], [config.CHUNKER]
+    conds, params = ["strategy = %s"], [p.strategy]
     if p.category:
         conds.append("category = ANY(%s)")
         params.append(p.category)

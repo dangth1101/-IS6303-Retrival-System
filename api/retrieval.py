@@ -33,7 +33,7 @@ def sparse(conn: psycopg.Connection, params, limit: int) -> list[Candidate]:
     where, wparams = where_clause(params)
     sql = f"""SELECT {COLUMNS}, pdb.score(id) AS score
               FROM chunk WHERE content ||| %s AND {where}
-              ORDER BY score DESC LIMIT %s"""
+              ORDER BY score DESC, id LIMIT %s"""  # id: tied scores otherwise follow physical order
     return _rows(conn, sql, [params.q, *wparams, limit])
 
 

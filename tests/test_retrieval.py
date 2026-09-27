@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from api.filters import SearchParams, where_clause
-from api.retrieval import Candidate, rerank, rrf
+from api.retrieval import Candidate, rerank, rrf, sparse
 
 
 def cand(cid, score=0.0):
@@ -25,14 +25,29 @@ def test_rerank_orders_by_scorer_and_records_score():
 
 
 def test_where_clause_scopes_to_the_chunking_strategy_then_filters_in_order():
-    p = SearchParams(q="shrimp", category=["salad", "main-dish"], kind=["step"],
+    p = SearchParams(q="shrimp", strategy="fixed", category=["salad", "main-dish"], kind=["step"],
                      min_rating=4.0, max_total_minutes=30)
     sql, params = where_clause(p)
     assert sql == ("strategy = %s AND category = ANY(%s) AND kind = ANY(%s) "
                    "AND total_minutes <= %s AND rating >= %s")
-    assert params == ["semantic", ["salad", "main-dish"], ["step"], 30, 4.0]
+    assert params == ["fixed", ["salad", "main-dish"], ["step"], 30, 4.0]
 
 
 def test_unknown_filter_is_rejected():
     with pytest.raises(ValidationError):
-        SearchParams(q="x", max_minutes=30)
+        SearchParams(q="x", strategy="semantic", max_minutes=30)
+
+
+class RecordingConn:
+    def execute(self, sql, params):
+        self.sql, self.params = sql, params
+        return self
+
+    def fetchall(self):
+        return []
+
+
+def test_sparse_breaks_score_ties_by_chunk_id_so_order_is_stable():
+    conn = RecordingConn()
+    sparse(conn, SearchParams(q="shrimp", strategy="semantic"), 10)
+    assert "ORDER BY score DESC, id LIMIT" in " ".join(conn.sql.split())

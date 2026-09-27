@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel
 
-from . import config, retrieval
+from . import config, retrieval, strategies
 from .embed import embed_query
 from .filters import SearchParams
 from .rerank import Reranker
@@ -51,13 +51,13 @@ class Hit(BaseModel):
 
 class SearchResponse(BaseModel):
     method: str
+    strategy: str
     query: str
     k: int
     took_ms: float
     results: list[Hit]
 
 
-Params = Annotated[SearchParams, Query()]
 
 
 def _response(method: str, params, started: float, candidates) -> SearchResponse:
@@ -67,7 +67,7 @@ def _response(method: str, params, started: float, candidates) -> SearchResponse
         hits.append(Hit(chunk_id=c.chunk_id, recipe_id=c.recipe_id, title=title, kind=c.kind,
                         position=c.position, text=text, score=c.score, sparse_rank=c.sparse_rank,
                         dense_rank=c.dense_rank, rrf_score=c.rrf_score, rerank_score=c.rerank_score))
-    return SearchResponse(method=method, query=params.q, k=params.k,
+    return SearchResponse(method=method, strategy=params.strategy, query=params.q, k=params.k,
                           took_ms=round((time.perf_counter() - started) * 1000, 1), results=hits)
 
 
@@ -81,6 +81,17 @@ def _embed(request: Request, text: str) -> str:
 def get_conn(request: Request):
     with request.app.state.pool.connection() as conn:
         yield conn
+
+
+def searchable(params: Annotated[SearchParams, Query()], conn=Depends(get_conn)) -> SearchParams:
+    """The search params, once their strategy is known to be loaded (422 otherwise)."""
+    problem = strategies.strategy_problem(params.strategy, strategies.registry(conn))
+    if problem:
+        raise HTTPException(422, [{"type": "value_error", "loc": ["query", "strategy"], "msg": problem}])
+    return params
+
+
+Params = Annotated[SearchParams, Depends(searchable)]
 
 
 STATIC = Path(__file__).parent / "static"  # built by `npm run build` in ui/
@@ -117,6 +128,12 @@ def search_hybrid(params: Params, request: Request, conn=Depends(get_conn)):
     return _response("hybrid", params, started, hits)
 
 
+@app.get("/strategies")
+def list_strategies(conn=Depends(get_conn)) -> list[dict]:
+    """Chunking strategies that can be searched, ordered by name."""
+    return strategies.loaded(conn)
+
+
 @app.get("/categories")
 def categories(conn=Depends(get_conn)) -> list[str]:
     return [r[0] for r in conn.execute("SELECT name FROM category ORDER BY name").fetchall()]
@@ -124,12 +141,10 @@ def categories(conn=Depends(get_conn)) -> list[str]:
 
 @app.get("/health")
 def health(request: Request):
-    status = {"chunker": config.CHUNKER, "reranker": config.RERANK_MODEL,
-              "reranker_device": request.app.state.reranker.device}
+    status = {"reranker": config.RERANK_MODEL, "reranker_device": request.app.state.reranker.device}
     try:
         with request.app.state.pool.connection() as conn:
-            status["chunks"] = conn.execute("SELECT count(*) FROM chunk WHERE strategy = %s",
-                                            [config.CHUNKER]).fetchone()[0]
+            status["chunks"] = strategies.chunk_counts(conn)
         status["database"] = "ok"
     except Exception as e:
         status["database"] = f"error: {e}"

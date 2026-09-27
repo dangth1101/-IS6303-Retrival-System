@@ -7,8 +7,6 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 RERANK_MODEL = os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-base")
 
-CHUNKER = os.environ.get("CHUNKER", "semantic")  # the only Chunking strategy searched (interim, ticket 03 removes it)
-
 DEFAULT_K = 5
 MAX_K = 50
 HYBRID_CANDIDATES = int(os.environ.get("HYBRID_CANDIDATES", 50))  # top N from each retriever

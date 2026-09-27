@@ -10,6 +10,8 @@ export type ColumnState =
 
 interface Props {
   method: Method
+  /** Chunking strategy of the current search; a finished column shows the one its response names. */
+  strategy: string | null
   state: ColumnState
   k: number
   /** Visible rank of each chunk_id, per column, for the "also in" pills. */
@@ -33,14 +35,18 @@ function sightingsFor(method: Method, hit: Hit, ranks: Props['ranks']): Sighting
   }))
 }
 
-export function ResultColumn({ method, state, k, ranks, hovered, onHover }: Props) {
+export function ResultColumn({ method, strategy, state, k, ranks, hovered, onHover }: Props) {
   const m = METHOD[method]
+  const shown = state.status === 'done' ? state.data.strategy : strategy
 
   return (
     <section data-col={method} aria-labelledby={`col-${method}`} className="min-w-0">
       <header className={`mb-4 border-t-2 pt-3 ${m.border}`}>
         <div className="flex items-baseline justify-between gap-3">
-          <h2 id={`col-${method}`} className="text-lg font-semibold text-ink">{m.name}</h2>
+          <h2 id={`col-${method}`} className="flex items-baseline gap-2 text-lg font-semibold text-ink">
+            {m.name}
+            {shown && <span className="text-sm font-normal text-muted" title="Chunking strategy">{shown}</span>}
+          </h2>
           <span className="text-xs text-muted">
             {state.status === 'done' ? `Top ${k} in ${state.data.took_ms} ms` : `Top ${k}`}
           </span>
