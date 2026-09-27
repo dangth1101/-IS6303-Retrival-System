@@ -3,6 +3,9 @@
     uv run scripts/evaluate.py                                    # every config, every loaded strategy
     uv run scripts/evaluate.py --configs dense --strategies fixed --limit 20
 
+Configs: sparse, dense, fusion (the Fusion baseline: the candidates Hybrid would rerank, in RRF order;
+eval only) and hybrid (RRF + Reranking, as the API serves it). Both call the API's own Hybrid code.
+
 Prints a markdown table and writes a run folder under eval/runs/<timestamp>/:
 settings.json, metrics.json, metrics.csv, per_query.csv (ranks and latencies), table.md.
 Runs in the project env (not a PEP 723 script) because it calls the API's retrieval code.
@@ -17,6 +20,7 @@ import sys
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -34,9 +38,9 @@ from api.filters import SearchParams  # noqa: E402
 QUERY_SET = ROOT / "eval" / "queries.jsonl"
 RUNS = ROOT / "eval" / "runs"
 POOL = 100  # Chunks Sparse and Dense pull before deduping to the top metrics.DEPTH Recipes
-STAGES = ["embed", "sparse", "dense"]
 
 Embedder = Callable[[str], str]  # query text -> pgvector literal
+Scorer = Callable[[str, list[str]], list[float]]  # the reranker: query, Chunk texts -> scores
 
 
 class Stopwatch(dict):
@@ -49,20 +53,50 @@ class Stopwatch(dict):
         self[stage] = (time.perf_counter() - started) * 1000
 
 
-# A config takes the query's params and embedding, times its own stages, and returns ranked Chunks.
+@dataclass(frozen=True)
+class SearchInput:
+    params: SearchParams
+    qvec: str | None  # the query embedding, if any config needs it
+    scorer: Scorer | None  # the reranker, if Hybrid runs
 
-def sparse(conn, params, qvec, watch):
+
+# A config's search takes a SearchInput, times its own stages, and returns ranked Chunks.
+
+def sparse(conn, q: SearchInput, watch):
     with watch("sparse"):
-        return retrieval.sparse(conn, params, POOL)
+        return retrieval.sparse(conn, q.params, POOL)
 
 
-def dense(conn, params, qvec, watch):
+def dense(conn, q: SearchInput, watch):
     with watch("dense"):
-        return retrieval.dense(conn, params, qvec, POOL)
+        return retrieval.dense(conn, q.params, q.qvec, POOL)
 
 
-CONFIGS = {"sparse": sparse, "dense": dense}
-USES_EMBEDDING = {"dense"}  # their latency includes the query embedding
+def fusion(conn, q: SearchInput, watch):
+    return retrieval.fused_candidates(conn, q.params, q.qvec, watch)
+
+
+def hybrid(conn, q: SearchInput, watch):
+    return retrieval.hybrid(conn, q.params, q.qvec, q.scorer, watch)
+
+
+@dataclass(frozen=True)
+class EvalConfig:
+    search: Callable[..., list[retrieval.Candidate]]  # (conn, SearchInput, Stopwatch) -> ranked Chunks
+    stages: tuple[str, ...]  # its latency is the sum of these; "embed" means it needs the query embedding
+
+
+CONFIGS = {
+    "sparse": EvalConfig(sparse, ("sparse",)),
+    "dense": EvalConfig(dense, ("embed", "dense")),
+    "fusion": EvalConfig(fusion, ("embed", "sparse", "dense", "rrf")),
+    "hybrid": EvalConfig(hybrid, ("embed", "sparse", "dense", "rrf", "rerank")),
+}
+STAGES = list(dict.fromkeys(st for c in CONFIGS.values() for st in c.stages))  # CSV column order
+
+
+def any_stage(configs, stage: str) -> bool:
+    return any(stage in CONFIGS[c].stages for c in configs)
 
 
 def read_queries(path: Path, limit: int | None = None) -> list[dict]:
@@ -70,27 +104,29 @@ def read_queries(path: Path, limit: int | None = None) -> list[dict]:
     return lines[:limit] if limit else lines
 
 
-def search_all(conn, queries: list[dict], strategy_names: list[str], configs: list[str], embedder: Embedder):
+def search_all(conn, queries: list[dict], strategy_names: list[str], configs: list[str], embedder: Embedder,
+               scorer: Scorer | None):
     """Ranked Recipe ids and stage timings per (config, strategy, query id).
 
-    The first query runs once more as an uncounted warm-up, so caches and connections are hot.
+    The first query runs once more as an uncounted warm-up, so caches, connections and the reranker are hot.
     Each query is embedded once and shared by every strategy and config that needs it.
     """
     ranked, timings = {}, {}
-    needs_embedding = any(c in USES_EMBEDDING for c in configs)
+    needs_embedding = any_stage(configs, "embed")
     for i, q in enumerate([queries[0], *queries]):
         query_watch, qvec = Stopwatch(), None
         if needs_embedding:
             with query_watch("embed"):
                 qvec = embedder(q["text"])
         for strategy in strategy_names:
-            params = SearchParams(q=q["text"], strategy=strategy)
+            # k=MAX_K: served Hybrid cuts to k, and the eval wants its full list to dedupe
+            query = SearchInput(SearchParams(q=q["text"], strategy=strategy, k=config.MAX_K), qvec, scorer)
             for c in configs:
                 watch = Stopwatch()
-                hits = CONFIGS[c](conn, params, qvec, watch)
+                hits = CONFIGS[c].search(conn, query, watch)
                 if i == 0:
                     continue
-                if c in USES_EMBEDDING:
+                if "embed" in CONFIGS[c].stages:
                     watch["embed"] = query_watch["embed"]
                 key = (c, strategy, q["query_id"])
                 ranked[key] = metrics.dedupe(h.recipe_id for h in hits)
@@ -112,12 +148,13 @@ def resolve_strategies(conn, chosen: list[str] | None) -> list[str]:
 def summarize(relevant, ranked, timings) -> list[dict]:
     rows = []
     for (c, s), scores in metrics.metrics_table(relevant, ranked).items():
-        watches = [w for (wc, ws, _), w in timings.items() if (wc, ws) == (c, s)]
+        keys = [k for k in timings if k[:2] == (c, s)]
+        watches = [timings[k] for k in keys]
         latency = {"total": metrics.latency_summary(sum(w.values()) for w in watches)}
-        for stage in STAGES:
-            if stage in watches[0]:
-                latency[stage] = metrics.latency_summary(w[stage] for w in watches)
-        rows.append({"config": c, "strategy": s, **scores, "latency_ms": latency})
+        for stage in CONFIGS[c].stages:
+            latency[stage] = metrics.latency_summary(w[stage] for w in watches)
+        short = sum(len(ranked[k]) < metrics.DEPTH for k in keys)
+        rows.append({"config": c, "strategy": s, **scores, "short_lists": short, "latency_ms": latency})
     return rows
 
 
@@ -130,7 +167,11 @@ def markdown(rows: list[dict]) -> str:
                  f"{total['p50_ms']:.1f}", f"{total['p95_ms']:.1f}"]
         lines.append("| " + " | ".join(cells) + " |")
     n = rows[0]["queries"] if rows else 0
-    return f"{n} queries. Ranks over the top {metrics.DEPTH} unique Recipes.\n\n" + "\n".join(lines) + "\n"
+    short = [f"{r['config']}/{r['strategy']} {r['short_lists']}" for r in rows if r["short_lists"]]
+    note = (f"\nQueries whose list had fewer than {metrics.DEPTH} unique Recipes (the missing positions count as "
+            f"misses): {', '.join(short)}.\n" if short else "")
+    return (f"{n} queries. Ranks over the top {metrics.DEPTH} unique Recipes.\n\n" + "\n".join(lines) + "\n"
+            + note)
 
 
 def _git_commit() -> str | None:
@@ -146,10 +187,11 @@ def write_run(run_dir: Path, settings: dict, rows: list[dict], relevant, ranked,
     stage_cols = [f"{st}_{p}" for st in ["total", *STAGES] for p in ("p50_ms", "p95_ms")]
     with open(run_dir / "metrics.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["config", "strategy", "queries", *metrics.COLUMNS, *stage_cols])
+        w.writerow(["config", "strategy", "queries", *metrics.COLUMNS, "short_lists", *stage_cols])
         for r in rows:
             lat = r["latency_ms"]
             w.writerow([r["config"], r["strategy"], r["queries"], *(round(r[m], 4) for m in metrics.COLUMNS),
+                        r["short_lists"],
                         *(round(lat[st][p], 2) if st in lat else "" for st in ["total", *STAGES]
                           for p in ("p50_ms", "p95_ms"))])
 
@@ -167,10 +209,14 @@ def write_run(run_dir: Path, settings: dict, rows: list[dict], relevant, ranked,
     (run_dir / "table.md").write_text(markdown(rows))
 
 
-def run(conn, embedder: Embedder, *, configs: list[str] | None = None, strategy_names: list[str] | None = None,
-        query_set: Path = QUERY_SET, limit: int | None = None, out: Path = RUNS) -> Path:
+def run(conn, embedder: Embedder, scorer: Scorer | None = None, *, configs: list[str] | None = None,
+        strategy_names: list[str] | None = None, query_set: Path = QUERY_SET, limit: int | None = None,
+        out: Path = RUNS) -> Path:
     """One Evaluation run. Returns its folder."""
     configs = configs or list(CONFIGS)
+    reranks = any_stage(configs, "rerank")
+    if reranks and scorer is None:
+        raise ValueError("a Reranking config (hybrid) needs a reranker scorer")
     strategy_names = resolve_strategies(conn, strategy_names)
     if not strategy_names:
         raise ValueError("no Chunking strategy is loaded")
@@ -180,7 +226,7 @@ def run(conn, embedder: Embedder, *, configs: list[str] | None = None, strategy_
     relevant = {q["query_id"]: q["recipe_id"] for q in queries}
 
     started = datetime.now()
-    ranked, timings = search_all(conn, queries, strategy_names, configs, embedder)
+    ranked, timings = search_all(conn, queries, strategy_names, configs, embedder, scorer)
     rows = summarize(relevant, ranked, timings)
 
     settings = {
@@ -195,7 +241,11 @@ def run(conn, embedder: Embedder, *, configs: list[str] | None = None, strategy_
         "limit": limit,
         "chunk_pool": POOL,
         "depth": metrics.DEPTH,
+        "hybrid_candidates": config.HYBRID_CANDIDATES,
+        "rerank_top": config.RERANK_TOP,
+        "rrf_k": config.RRF_K,
         "embed_model": config.EMBED_MODEL,
+        "rerank_model": config.RERANK_MODEL if reranks else None,
         "warmup_queries": 1,
     }
     run_dir = out / started.strftime("%Y%m%d-%H%M%S")
@@ -215,9 +265,13 @@ def parse_args(argv=None):
 
 if __name__ == "__main__":
     a = parse_args()
+    scorer = None
+    if any_stage(a.configs or CONFIGS, "rerank"):
+        from api.rerank import Reranker  # imports torch and loads the model, so only when Hybrid runs
+        scorer = Reranker().score  # loaded once, before any timing
     with psycopg.connect(config.DATABASE_URL, autocommit=True) as conn, httpx.Client(timeout=30) as http:
         try:
-            run_dir = run(conn, lambda text: embed_query(http, text), configs=a.configs,
+            run_dir = run(conn, lambda text: embed_query(http, text), scorer, configs=a.configs,
                           strategy_names=a.strategies, query_set=a.queries.resolve(), limit=a.limit, out=a.out)
         except ValueError as e:
             sys.exit(f"evaluate: {e}")

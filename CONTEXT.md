@@ -45,3 +45,15 @@ _Avoid_: Fusion search, combined search
 **Reranking**:
 Re-scoring a short list of candidate Chunks by reading the query and each Chunk's text together, and reordering them by that score.
 _Avoid_: Re-ranking, second-stage ranking
+
+**Fusion baseline**:
+Hybrid retrieval without Reranking: the same merged candidates Hybrid retrieval would rerank, left in rank-position order. Used only in an Evaluation run, to show what Reranking adds. Never served; served Hybrid retrieval always reranks.
+_Avoid_: Hybrid RRF, RRF-only search
+
+**Query set**:
+The fixed list of test queries in the repo. Each was written from one Recipe, and that Recipe is its only correct answer.
+_Avoid_: Test set, qrels, benchmark
+
+**Evaluation run**:
+One scoring of the retrieval configs (Sparse, Dense, Fusion baseline, Hybrid) on the Query set under the chosen Chunking strategies, kept as one timestamped folder of settings, metrics and per-query ranks.
+_Avoid_: Benchmark, experiment

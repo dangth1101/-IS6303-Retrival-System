@@ -1,5 +1,6 @@
 """Sparse, Dense and Hybrid retrieval over Chunks. See CONTEXT.md for the terms."""
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import psycopg
@@ -68,7 +69,22 @@ def rerank(query: str, candidates: list[Candidate], scorer) -> list[Candidate]:
     return sorted(candidates, key=lambda c: c.rerank_score, reverse=True)
 
 
-def hybrid(conn: psycopg.Connection, params, qvec: str, scorer) -> list[Candidate]:
+def untimed(stage: str):
+    return nullcontext()
+
+
+def fused_candidates(conn: psycopg.Connection, params, qvec: str, watch=untimed) -> list[Candidate]:
+    """The RRF-merged Chunks Hybrid sends to the reranker. `watch(stage)` times each stage (the eval uses it)."""
     n = config.HYBRID_CANDIDATES
-    fused = rrf(sparse(conn, params, n), dense(conn, params, qvec, n))
-    return rerank(params.q, fused[:config.RERANK_TOP], scorer)[:params.k]
+    with watch("sparse"):
+        sparse_hits = sparse(conn, params, n)
+    with watch("dense"):
+        dense_hits = dense(conn, params, qvec, n)
+    with watch("rrf"):
+        return rrf(sparse_hits, dense_hits)[:config.RERANK_TOP]
+
+
+def hybrid(conn: psycopg.Connection, params, qvec: str, scorer, watch=untimed) -> list[Candidate]:
+    fused = fused_candidates(conn, params, qvec, watch)
+    with watch("rerank"):
+        return rerank(params.q, fused, scorer)[:params.k]

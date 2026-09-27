@@ -10,13 +10,13 @@ One table comparing 4 configs × every loaded Chunking strategy on Recall@5/10/2
 
 - [x] Phase 1: environment (`docker-compose.yml`, `pyproject.toml`, layout)
 - [x] Phase 3: ingest and index (`scripts/ingest.py`, `sql/`, 3 Chunking strategies)
-- [ ] Phase 4: 4 configs
+- [x] Phase 4: 4 configs
   - [x] Sparse (`retrieval.sparse`)
   - [x] Dense (`retrieval.dense`)
-  - [ ] Hybrid RRF without Reranking (`retrieval.rrf` exists, not exposed)
+  - [x] Fusion baseline: Hybrid without Reranking, eval only (`retrieval.fused_candidates`)
   - [x] Hybrid with Reranking (`retrieval.hybrid`)
 - [x] Phase 2: ground truth (queries + qrels): `eval/queries.jsonl`
-- [x] Phase 5: metrics engine, markdown table, JSON/CSV export (`scripts/evaluate.py`, Sparse and Dense so far)
+- [x] Phase 5: metrics engine, markdown table, JSON/CSV export (`scripts/evaluate.py`, all 4 configs)
 - [ ] Phase 6: failure analyzer, latency vs accuracy, report sections
 - [ ] README with run steps
 - [ ] Ollama (`nomic-embed-text`) documented or added to `docker-compose.yml`
