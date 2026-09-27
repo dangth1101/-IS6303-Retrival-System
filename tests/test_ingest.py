@@ -1,12 +1,12 @@
 import threading
 
-import numpy as np
 import psycopg
 import pytest
 
 import ingest
 from api import retrieval
 from api.filters import SearchParams
+from conftest import RECIPES
 
 
 # --- the sentence cut ---------------------------------------------------------
@@ -57,35 +57,7 @@ def test_fixed_cut_keeps_short_recipes_whole_and_handles_empty_ones():
 
 # --- against the test DB: a few Recipes, embeddings stubbed --------------------
 
-RECIPES = [  # title, directions, ingredient lines
-    ("Garlic Shrimp", "Heat oil. Add garlic. Stir. Add shrimp. Cook 3 minutes.", ["1 lb shrimp", "4 cloves garlic"]),
-    ("Toast", "Toast the bread.", ["2 slices bread"]),
-    ("Tea", "Boil water. Steep ½ hour. Pour.", ["1 tea bag"]),
-]
-
-
-@pytest.fixture
-def recipes(db):
-    db.execute("TRUNCATE category, author, recipe, recipe_nutrition, recipe_ingredient RESTART IDENTITY CASCADE")
-    db.execute("INSERT INTO category (name) VALUES ('Main')")
-    for i, (title, directions, lines) in enumerate(RECIPES):
-        rid = db.execute(
-            """INSERT INTO recipe (url, title, description, directions, category_id, rating,
-                 rating_count, review_count, total_minutes, servings)
-               VALUES (%s, %s, 'Nice.', %s, 1, 4.5, 10, 3, 20, 2) RETURNING id""",
-            [f"u{i}", title, directions]).fetchone()[0]
-        db.execute("INSERT INTO recipe_nutrition (recipe_id, calories) VALUES (%s, 100)", [rid])
-        for pos, line in enumerate(lines, 1):
-            db.execute("INSERT INTO recipe_ingredient VALUES (%s, %s, %s)", [rid, pos, line])
-    return db
-
-
-@pytest.fixture(autouse=True)
-def fake_embed(monkeypatch):
-    def embed(texts):
-        v = np.random.default_rng(len(texts)).random((len(texts), 768), dtype=np.float32)
-        return v / np.linalg.norm(v, axis=1, keepdims=True)
-    monkeypatch.setattr(ingest, "embed", embed)
+pytestmark = pytest.mark.usefixtures("fake_embed")  # ingest.embed never calls Ollama here
 
 
 @pytest.fixture

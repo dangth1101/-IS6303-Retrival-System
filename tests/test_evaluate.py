@@ -1,18 +1,12 @@
 import csv
 import json
 
-import numpy as np
 import pytest
 
 import evaluate
 import ingest
 from conftest import add_strategy
 
-RECIPES = [  # title, directions, ingredient lines
-    ("Garlic Shrimp", "Heat oil. Add garlic. Stir. Add shrimp. Cook 3 minutes.", ["1 lb shrimp", "4 cloves garlic"]),
-    ("Toast", "Toast the bread.", ["2 slices bread"]),
-    ("Tea", "Boil water. Steep ½ hour. Pour.", ["1 tea bag"]),
-]
 QUERIES = [
     {"query_id": "q001", "text": "garlic shrimp", "recipe_id": 1, "recipe_title": "Garlic Shrimp"},
     {"query_id": "q002", "text": "steeped tea", "recipe_id": 3, "recipe_title": "Tea"},
@@ -20,27 +14,11 @@ QUERIES = [
 
 
 @pytest.fixture
-def loaded_db(db, monkeypatch):
-    """Three Recipes chunked under `sentence`, with random unit embeddings."""
-    db.execute("TRUNCATE category, author, recipe, recipe_nutrition, recipe_ingredient RESTART IDENTITY CASCADE")
-    db.execute("INSERT INTO category (name) VALUES ('Main')")
-    for i, (title, directions, lines) in enumerate(RECIPES):
-        rid = db.execute(
-            """INSERT INTO recipe (url, title, description, directions, category_id, rating,
-                 rating_count, review_count, total_minutes, servings)
-               VALUES (%s, %s, 'Nice.', %s, 1, 4.5, 10, 3, 20, 2) RETURNING id""",
-            [f"u{i}", title, directions]).fetchone()[0]
-        db.execute("INSERT INTO recipe_nutrition (recipe_id, calories) VALUES (%s, 100)", [rid])
-        for pos, line in enumerate(lines, 1):
-            db.execute("INSERT INTO recipe_ingredient VALUES (%s, %s, %s)", [rid, pos, line])
-
-    def embed(texts):
-        v = np.random.default_rng(len(texts)).random((len(texts), 768), dtype=np.float32)
-        return v / np.linalg.norm(v, axis=1, keepdims=True)
-    monkeypatch.setattr(ingest, "embed", embed)
-    ingest.run(db, ["chunk", "sentence"])
-    add_strategy(db, "fixed", loaded=False)  # registered but not loaded: never part of a default run
-    return db
+def loaded_db(recipes, fake_embed):
+    """RECIPES chunked under `sentence`; `fixed` registered but not loaded, so never in a default run."""
+    ingest.run(recipes, ["chunk", "sentence"])
+    add_strategy(recipes, "fixed", loaded=False)
+    return recipes
 
 
 @pytest.fixture

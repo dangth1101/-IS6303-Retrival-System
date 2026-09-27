@@ -5,9 +5,11 @@ Tests that use it are skipped when the container isn't running.
 
 import subprocess
 
+import numpy as np
 import psycopg
 import pytest
 
+import ingest
 from api import config
 
 CONTAINER = "recipe-paradedb"
@@ -43,3 +45,36 @@ def db(test_db_url):
 def add_strategy(conn, name, loaded=True):
     conn.execute("INSERT INTO chunking_strategy (name, method, parameters, loaded_at) "
                  "VALUES (%s, %s, '{}', CASE WHEN %s THEN now() END)", [name, name, loaded])
+
+
+RECIPES = [  # title, directions, ingredient lines
+    ("Garlic Shrimp", "Heat oil. Add garlic. Stir. Add shrimp. Cook 3 minutes.", ["1 lb shrimp", "4 cloves garlic"]),
+    ("Toast", "Toast the bread.", ["2 slices bread"]),
+    ("Tea", "Boil water. Steep ½ hour. Pour.", ["1 tea bag"]),
+]
+
+
+@pytest.fixture
+def recipes(db):
+    """The test DB holding just RECIPES, ids 1..3 in order."""
+    db.execute("TRUNCATE category, author, recipe, recipe_nutrition, recipe_ingredient RESTART IDENTITY CASCADE")
+    db.execute("INSERT INTO category (name) VALUES ('Main')")
+    for i, (title, directions, lines) in enumerate(RECIPES):
+        rid = db.execute(
+            """INSERT INTO recipe (url, title, description, directions, category_id, rating,
+                 rating_count, review_count, total_minutes, servings)
+               VALUES (%s, %s, 'Nice.', %s, 1, 4.5, 10, 3, 20, 2) RETURNING id""",
+            [f"u{i}", title, directions]).fetchone()[0]
+        db.execute("INSERT INTO recipe_nutrition (recipe_id, calories) VALUES (%s, 100)", [rid])
+        for pos, line in enumerate(lines, 1):
+            db.execute("INSERT INTO recipe_ingredient VALUES (%s, %s, %s)", [rid, pos, line])
+    return db
+
+
+@pytest.fixture
+def fake_embed(monkeypatch):
+    """ingest.embed without Ollama: random unit vectors, the same for the same batch size."""
+    def embed(texts):
+        v = np.random.default_rng(len(texts)).random((len(texts), 768), dtype=np.float32)
+        return v / np.linalg.norm(v, axis=1, keepdims=True)
+    monkeypatch.setattr(ingest, "embed", embed)

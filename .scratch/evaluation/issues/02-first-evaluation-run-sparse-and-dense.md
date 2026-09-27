@@ -16,7 +16,7 @@ Spec: [../spec.md](../spec.md), "Implementation Decisions" (Four configs, Chunk 
 - [x] Run folders are gitignored
 - [x] Metric tests with hand-worked values: ranks 1 and 7, a missing Recipe, a duplicate Recipe counted once, an empty result counted as a miss
 - [x] An end-to-end test on `recipe_test` with a fake embedder: two queries, the expected files, and a known-item query ranking its Recipe first
-- [x] A real run over the 300 queries and 3 strategies finishes, and the table is pasted into the Done notes
+- [x] A real run over the 300 queries and 3 strategies finishes, and the table is pasted into the Done notes (298 queries: ticket 01 skipped Recipes 430 and 7150)
 
 ## Done (2026-09-28)
 
@@ -40,3 +40,10 @@ Real run `20260928-001149`: 298 queries, 3 strategies, 70 s.
 - Sparse and Dense are within a few points everywhere; Sparse is slightly ahead on MRR. Expected given word overlap 0.85 (see ticket 01).
 - Chunking strategy barely moves the numbers (±0.02). Summary and Ingredients chunks are the same under every strategy, and a known-item query mostly hits those.
 - Dense p50 splits into ~21 ms embedding (Ollama over HTTP) + ~31 ms vector search. Its p95 tail is the vector search, not the embedding (p95 29 ms).
+
+Code review (2026-09-28), two axes against `ed834eb`:
+
+- Spec: nothing wrong. Only gap was the 300 vs 298 checkbox, now noted above.
+- Standards: the `recipes` fixture, `RECIPES` and the fake embed were copied from `test_ingest.py`. Moved to `tests/conftest.py`; both test files use them.
+- Left for ticket 03: `CONFIGS` should become one record per config (function, uses embedding, stages), since Hybrid is what needs it. That also drops the unused `qvec` in `sparse()`.
+- Report note: each query is embedded once and reused under every strategy, so Dense latency rows share the same embed samples.

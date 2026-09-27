@@ -8,6 +8,7 @@ Spec: [../spec.md](../spec.md), "Implementation Decisions" (Four configs, Glossa
 
 **Status:** ready-for-agent
 
+- [ ] First, `evaluate.CONFIGS` becomes one record per config (function, uses embedding, stages) so a new config is one entry, not edits to `STAGES`, `USES_EMBEDDING` and the stage checks (ticket 02 review)
 - [ ] Both configs reuse the existing retrieval functions and the API's candidate and rerank settings, not copies of them
 - [ ] The reranker loads once before timing. Latency adds RRF and Reranking stages
 - [ ] A config with fewer than 20 unique Recipes counts the missing positions as misses
