@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8", "tokenizers>=0.19"]  # scripts/ingest.py, imported by its tests
+dev = ["pytest>=8", "tokenizers>=0.19", "snowballstemmer>=3.1"]  # scripts imported by their tests
 
 [tool.uv]
 package = false
