@@ -159,7 +159,7 @@ def summarize(relevant, ranked, timings) -> list[dict]:
 
 
 def markdown(rows: list[dict]) -> str:
-    head = ["Config", "Strategy", "R@5", "R@10", "R@20", "MRR", "nDCG@5", "nDCG@10", "p50 ms", "p95 ms"]
+    head = ["Config", "Strategy", *(metrics.LABELS[m] for m in metrics.COLUMNS), "p50 ms", "p95 ms"]
     lines = ["| " + " | ".join(head) + " |", "|" + "---|" * 2 + "---:|" * (len(head) - 2)]
     for r in rows:
         total = r["latency_ms"]["total"]

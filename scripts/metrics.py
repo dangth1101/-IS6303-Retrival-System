@@ -17,6 +17,7 @@ DEPTH = 20
 RECALL_AT = (5, 10, 20)
 NDCG_AT = (5, 10)
 COLUMNS = [*(f"recall@{k}" for k in RECALL_AT), "mrr", *(f"ndcg@{k}" for k in NDCG_AT)]
+LABELS = {**{f"recall@{k}": f"R@{k}" for k in RECALL_AT}, "mrr": "MRR", **{f"ndcg@{k}": f"nDCG@{k}" for k in NDCG_AT}}
 
 Key = tuple[str, str, str]  # (config, strategy, query id)
 
@@ -55,12 +56,15 @@ def metrics_table(relevant: Mapping[str, int], runs: Mapping[Key, list[int]]) ->
     pairs = dict.fromkeys((c, s) for c, s, _ in runs)  # insertion order, no duplicates
     table = {}
     for config, strategy in pairs:
-        per_query = [query_scores(rank_of(rid, runs.get((config, strategy, qid), [])))
-                     for qid, rid in relevant.items()]
-        n = len(per_query)
-        table[config, strategy] = {col: sum(q[col] for q in per_query) / n if n else 0.0 for col in COLUMNS}
-        table[config, strategy]["queries"] = n
+        table[config, strategy] = average([query_scores(rank_of(rid, runs.get((config, strategy, qid), [])))
+                                           for qid, rid in relevant.items()])
     return table
+
+
+def average(per_query: list[dict[str, float]]) -> dict:
+    """Each metric averaged over the queries' scores, plus the query count."""
+    n = len(per_query)
+    return {**{col: sum(q[col] for q in per_query) / n if n else 0.0 for col in COLUMNS}, "queries": n}
 
 
 def latency_summary(ms: Iterable[float]) -> dict[str, float]:
