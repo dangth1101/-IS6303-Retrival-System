@@ -1,0 +1,9 @@
+# Local dataset and logs (recipe.csv is ~61 MB)
+data/
+.pytest_cache/
+.venv/
+__pycache__/
+node_modules/
+.DS_Store
+# built by `npm run build` in ui/
+api/static/
