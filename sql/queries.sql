@@ -1,4 +1,4 @@
--- Example queries. Run after `ingest.py index`.
+-- Example queries. Run once a strategy is built (`ingest.py chunk <name>`).
 -- psql: docker exec -it recipe-paradedb psql -U recipe -d recipe
 
 -- Sparse retrieval: BM25 over chunks, filters applied inside the index.

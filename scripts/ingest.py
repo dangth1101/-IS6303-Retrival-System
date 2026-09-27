@@ -2,13 +2,16 @@
 # requires-python = ">=3.11"
 # dependencies = ["psycopg[binary]>=3.2", "numpy>=1.26"]
 # ///
-"""Load Shengtao/recipe into ParadeDB, then chunk + embed it.
+"""Load Shengtao/recipe into ParadeDB, then build Chunking strategies from it.
 
-    uv run scripts/ingest.py load      # CSV -> source tables (seconds)
-    uv run scripts/ingest.py chunk     # semantic chunks + embeddings (resumable, ~70 min)
-    uv run scripts/ingest.py index     # build the ParadeDB index
+    uv run scripts/ingest.py load                # CSV -> source tables; refused while strategies exist
+    uv run scripts/ingest.py chunk <name>        # build one strategy end to end, index included
+    uv run scripts/ingest.py drop <name> [--yes] # remove a strategy; a loaded one needs --yes
+
+A crashed `chunk` is cleaned up by running it again. Strategies are defined in STRATEGIES.
 """
 
+import argparse
 import csv
 import json
 import os
@@ -17,11 +20,15 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import psycopg
 from psycopg import sql
+from psycopg.types.json import Jsonb
 
 ROOT = Path(__file__).resolve().parent.parent
 CSV_PATH = ROOT / "data" / "recipe.csv"
@@ -31,10 +38,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 EMBED_MODEL = "nomic-embed-text"
 EMBED_BATCH = 256
 
-CHUNKER = "semantic"  # stopgap until slice 2 rewrites this file around `chunk <name>`
-MIN_CHARS = 80
-MAX_CHARS = 400
-BREAK_PERCENTILE = 25
+BATCH_SIZE = 200  # Recipes per load transaction
 
 NUTRITION = {  # source column -> recipe_nutrition column
     "calories": "calories", "calories_from_fat": "calories_from_fat", "fat_g": "fat_g",
@@ -46,6 +50,7 @@ NUTRITION = {  # source column -> recipe_nutrition column
     "niacin_equivalents_mg": "niacin_mg", "vitamin_a_iu_IU": "vitamin_a_iu",
     "vitamin_c_mg": "vitamin_c_mg",
 }
+
 
 # ---------------------------------------------------------------------------
 # Parsing helpers
@@ -120,19 +125,21 @@ def to_pgvector(v: np.ndarray) -> str:
 
 
 # ---------------------------------------------------------------------------
-# semantic Chunking strategy
+# Chunking strategies. A cut turns each Recipe's directions (as sentences) into
+# its Step chunk texts, for a whole batch of Recipes at once.
 # ---------------------------------------------------------------------------
 
 
-def semantic_chunks(sentences: list[str], vecs: np.ndarray) -> list[str]:
+def semantic_chunks(sentences: list[str], vecs: np.ndarray, min_chars: int, max_chars: int,
+                    break_percentile: int) -> list[str]:
     """Cut where neighbouring-sentence similarity drops below the recipe's
-    BREAK_PERCENTILE, merge pieces < MIN_CHARS into their more similar
-    neighbour, split pieces > MAX_CHARS at their weakest internal link."""
+    break_percentile, merge pieces < min_chars into their more similar
+    neighbour, split pieces > max_chars at their weakest internal link."""
     n = len(sentences)
     if n == 1:
         return sentences
     sims = np.sum(vecs[:-1] * vecs[1:], axis=1)  # sims[i] links sentence i and i+1
-    threshold = np.percentile(sims, BREAK_PERCENTILE)
+    threshold = np.percentile(sims, break_percentile)
     # pieces as [start, end) sentence ranges
     cuts = [i + 1 for i in range(n - 1) if sims[i] < threshold]
     bounds = [0, *cuts, n]
@@ -143,7 +150,7 @@ def semantic_chunks(sentences: list[str], vecs: np.ndarray) -> list[str]:
 
     # merge small pieces
     while len(pieces) > 1:
-        small = [k for k, p in enumerate(pieces) if length(p) < MIN_CHARS]
+        small = [k for k, p in enumerate(pieces) if length(p) < min_chars]
         if not small:
             break
         k = small[0]
@@ -155,7 +162,7 @@ def semantic_chunks(sentences: list[str], vecs: np.ndarray) -> list[str]:
 
     # split large pieces
     def split(p):
-        if length(p) <= MAX_CHARS or p[1] - p[0] < 2:
+        if length(p) <= max_chars or p[1] - p[0] < 2:
             return [p]
         cut = p[0] + 1 + int(np.argmin(sims[p[0]:p[1] - 1]))
         return split([p[0], cut]) + split([cut, p[1]])
@@ -163,21 +170,58 @@ def semantic_chunks(sentences: list[str], vecs: np.ndarray) -> list[str]:
     return [" ".join(sentences[s:e]) for p in pieces for s, e in split(p)]
 
 
+def semantic_cut(batch: list[list[str]], min_chars: int, max_chars: int, break_percentile: int) -> list[list[str]]:
+    """Needs every sentence embedded, so this is the slow one (~70 min for all Recipes)."""
+    flat = [s for sents in batch for s in sents]
+    vecs, out, offset = embed([f"search_document: {s}" for s in flat]), [], 0
+    for sents in batch:
+        v = vecs[offset:offset + len(sents)]
+        out.append(semantic_chunks(sents, v, min_chars, max_chars, break_percentile) if sents else [])
+        offset += len(sents)
+    return out
+
+
+def sentence_cut(batch: list[list[str]], sentences: int) -> list[list[str]]:
+    """`sentences` consecutive sentences per chunk; the leftover forms its own chunk. No size cap."""
+    return [[" ".join(sents[i:i + sentences]) for i in range(0, len(sents), sentences)] for sents in batch]
+
+
+@dataclass(frozen=True)
+class Strategy:
+    method: str
+    parameters: dict  # passed to cut as keyword arguments, and written to chunking_strategy.parameters
+    cut: Callable[..., list[list[str]]]
+
+
+# The only place a Chunking strategy is defined. A retune takes a new name.
+STRATEGIES = {
+    "semantic": Strategy("semantic", {"min_chars": 80, "max_chars": 400, "break_percentile": 25}, semantic_cut),
+    "sentence": Strategy("sentence", {"sentences": 3}, sentence_cut),
+}
+
+
 # ---------------------------------------------------------------------------
-# Commands
+# Source data
 # ---------------------------------------------------------------------------
 
 
 def cmd_load(conn):
-    if not CSV_PATH.exists():
-        print(f"downloading {CSV_URL}")
-        urllib.request.urlretrieve(CSV_URL, CSV_PATH)
-    with open(CSV_PATH, newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-    print(f"{len(rows)} rows")
+    with conn.transaction(), conn.cursor() as cur:
+        # a reload renumbers Recipes, so kept chunks would point at the wrong ones.
+        # The lock holds off a `chunk` from registering until the reload commits.
+        cur.execute("LOCK TABLE chunking_strategy IN EXCLUSIVE MODE")
+        names = [r[0] for r in cur.execute("SELECT name FROM chunking_strategy ORDER BY name")]
+        if names:
+            sys.exit(f"drop strategies first: {', '.join(names)}")
 
-    with conn.cursor() as cur:
-        cur.execute("TRUNCATE category, author, recipe, recipe_nutrition, recipe_ingredient, chunk RESTART IDENTITY CASCADE")
+        if not CSV_PATH.exists():
+            print(f"downloading {CSV_URL}")
+            urllib.request.urlretrieve(CSV_URL, CSV_PATH)
+        with open(CSV_PATH, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        print(f"{len(rows)} rows")
+
+        cur.execute("TRUNCATE category, author, recipe, recipe_nutrition, recipe_ingredient RESTART IDENTITY CASCADE")
         cats = sorted({r["category"] for r in rows})
         cur.executemany("INSERT INTO category (name) VALUES (%s)", [(c,) for c in cats])
         authors = sorted({r["author"].strip() for r in rows if r["author"].strip()})
@@ -210,65 +254,133 @@ def cmd_load(conn):
             lines = [l.strip() for l in r["ingredients"].split(";") if l.strip()]
             cur.executemany("INSERT INTO recipe_ingredient VALUES (%s, %s, %s)",
                             [(rid, i + 1, l) for i, l in enumerate(lines)])
-    conn.commit()
     print(f"loaded {len(seen)} recipes ({skipped} duplicate urls skipped)")
 
 
-def cmd_chunk(conn, batch_size=200):
-    todo = conn.execute(
-        """SELECT r.id FROM recipe r
-           WHERE NOT EXISTS (SELECT 1 FROM chunk c WHERE c.recipe_id = r.id AND c.strategy = %s)
-           ORDER BY r.id""", (CHUNKER,)).fetchall()
-    todo = [t[0] for t in todo]
-    total, started = len(todo), time.time()
-    print(f"{total} recipes to chunk")
+# ---------------------------------------------------------------------------
+# Building one strategy: register -> load_chunks -> staging_problems -> finish
+# ---------------------------------------------------------------------------
 
-    for b in range(0, total, batch_size):
-        ids = todo[b:b + batch_size]
-        recipes = conn.execute(
-            """SELECT r.id, r.title, r.description, r.directions, c.name, r.total_minutes,
-                      r.prep_minutes, r.cook_minutes, r.rating, r.rating_count, r.servings,
-                      n.calories, n.protein_g, n.fat_g, n.carbohydrates_g, n.sodium_mg,
-                      (SELECT string_agg(line, '; ' ORDER BY position)
-                         FROM recipe_ingredient i WHERE i.recipe_id = r.id)
-               FROM recipe r JOIN category c ON c.id = r.category_id
-               LEFT JOIN recipe_nutrition n ON n.recipe_id = r.id
-               WHERE r.id = ANY(%s) ORDER BY r.id""", (ids,)).fetchall()
 
-        # 1. sentence embeddings for every recipe in the batch, in one go
-        sents = {r[0]: split_sentences(normalize_fractions(r[3])) for r in recipes}
-        flat = [s for r in recipes for s in sents[r[0]]]
-        svecs = embed([f"search_document: {s}" for s in flat])
+# The recipe columns every chunk copies: category and the 11 other filter attributes (ADR-0001).
+RECIPE_SQL = """SELECT r.id, r.title, r.description, r.directions, c.name, r.total_minutes,
+                       r.prep_minutes, r.cook_minutes, r.rating, r.rating_count, r.servings,
+                       n.calories, n.protein_g, n.fat_g, n.carbohydrates_g, n.sodium_mg,
+                       (SELECT string_agg(line, '; ' ORDER BY position)
+                          FROM recipe_ingredient i WHERE i.recipe_id = r.id)
+                FROM recipe r JOIN category c ON c.id = r.category_id
+                LEFT JOIN recipe_nutrition n ON n.recipe_id = r.id
+                WHERE r.id = ANY(%s) ORDER BY r.id"""
 
-        # 2. build chunks
-        chunks, offset = [], 0
-        for r in recipes:
-            rid, title, desc = r[0], r[1], r[2]
-            ss = sents[rid]
-            steps = semantic_chunks(ss, svecs[offset:offset + len(ss)]) if ss else []
-            offset += len(ss)
-            filters = r[4:16]
+
+def partition(name: str) -> str:
+    return f"chunk_{name}"
+
+
+def staging(name: str) -> str:
+    return f"{partition(name)}_staging"
+
+
+def register(conn, name: str):
+    """The registry row (not loaded) and its staging table, together or not at all.
+    Staging has chunk's columns and constraints but no identity (ATTACH refuses one):
+    its id takes the parent's sequence instead. The keys are built here, not by the attach,
+    so the attach doesn't build them under its lock; they're named for the final partition."""
+    s = STRATEGIES[name]
+    t = sql.Identifier(staging(name))
+    with conn.transaction():
+        conn.execute("INSERT INTO chunking_strategy (name, method, parameters) VALUES (%s, %s, %s)",
+                     [name, s.method, Jsonb(s.parameters)])
+        conn.execute(sql.SQL(
+            """CREATE TABLE {t} (LIKE chunk INCLUDING DEFAULTS INCLUDING CONSTRAINTS,
+                 CHECK (strategy = {name}),
+                 CONSTRAINT {pkey} PRIMARY KEY (id, strategy),
+                 CONSTRAINT {ukey} UNIQUE (recipe_id, strategy, kind, position))""").format(
+            t=t, name=sql.Literal(name), pkey=sql.Identifier(f"{partition(name)}_pkey"),
+            ukey=sql.Identifier(f"{partition(name)}_key")))
+        seq = conn.execute("SELECT pg_get_serial_sequence('chunk', 'id')").fetchone()[0]
+        conn.execute(sql.SQL("ALTER TABLE {t} ALTER COLUMN id SET DEFAULT nextval({seq})").format(
+            t=t, seq=sql.Literal(seq)))
+
+
+def load_chunks(conn, name: str):
+    """Chunk and embed every Recipe into staging, one transaction per batch.
+    Reads only the recipe tables, never another strategy's chunks."""
+    s = STRATEGIES[name]
+    ids = [r[0] for r in conn.execute("SELECT id FROM recipe ORDER BY id").fetchall()]
+    total, started = len(ids), time.time()
+    insert = sql.SQL(
+        """INSERT INTO {t} (recipe_id, strategy, kind, position, content, embedding,
+             category, total_minutes, prep_minutes, cook_minutes, rating, rating_count,
+             servings, calories, protein_g, fat_g, carbohydrates_g, sodium_mg)
+           VALUES (%s,%s,%s,%s,%s,%s::vector,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""").format(
+        t=sql.Identifier(staging(name)))
+    print(f"{total} recipes to chunk as {name}", flush=True)
+
+    for b in range(0, total, BATCH_SIZE):
+        recipes = conn.execute(RECIPE_SQL, (ids[b:b + BATCH_SIZE],)).fetchall()
+        steps = s.cut([split_sentences(normalize_fractions(r[3])) for r in recipes], **s.parameters)
+
+        chunks = []
+        for r, texts in zip(recipes, steps):
+            rid, title, desc, filters = r[0], r[1], r[2], r[4:16]
             chunks.append((rid, "summary", 0, f"{title}\n{normalize_fractions(desc)}", filters))
             chunks.append((rid, "ingredients", 0,
                            f"{title}\nIngredients: {normalize_fractions(r[16] or '')}", filters))
-            chunks += [(rid, "step", i + 1, f"{title}\n{t}", filters) for i, t in enumerate(steps)]
+            chunks += [(rid, "step", i + 1, f"{title}\n{t}", filters) for i, t in enumerate(texts)]
 
-        # 3. chunk embeddings + insert (one transaction per batch, so resume is safe)
-        cvecs = embed([f"search_document: {c[3]}" for c in chunks])
-        with conn.cursor() as cur:
-            cur.executemany(
-                """INSERT INTO chunk (recipe_id, strategy, kind, position, content, embedding,
-                     category, total_minutes, prep_minutes, cook_minutes, rating, rating_count,
-                     servings, calories, protein_g, fat_g, carbohydrates_g, sodium_mg)
-                   VALUES (%s,%s,%s,%s,%s,%s::vector,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                [(c[0], CHUNKER, c[1], c[2], c[3], to_pgvector(v), *c[4])
-                 for c, v in zip(chunks, cvecs)])
-        conn.commit()
+        vecs = embed([f"search_document: {c[3]}" for c in chunks])
+        with conn.transaction(), conn.cursor() as cur:
+            cur.executemany(insert, [(c[0], name, c[1], c[2], c[3], to_pgvector(v), *c[4])
+                                     for c, v in zip(chunks, vecs)])
 
-        done = min(b + batch_size, total)
+        done = b + len(recipes)
         rate = done / (time.time() - started)
         print(f"{done}/{total} recipes  {len(chunks)} chunks in batch  "
               f"eta {(total - done) / rate / 60:.0f} min", flush=True)
+
+
+def staging_problems(conn, name: str) -> list[str]:
+    """Names of the completeness checks staging fails; empty when it can be attached."""
+    t = sql.Identifier(staging(name))
+    per_recipe = conn.execute(sql.SQL(
+        """SELECT count(*) FILTER (WHERE summaries <> 1),
+                  count(*) FILTER (WHERE ingredients <> 1),
+                  count(*) FILTER (WHERE steps = 0),
+                  count(*) FILTER (WHERE steps > 0 AND (first <> 1 OR last <> steps OR distinct_steps <> steps))
+           FROM (SELECT r.id,
+                        count(c.id) FILTER (WHERE c.kind = 'summary') AS summaries,
+                        count(c.id) FILTER (WHERE c.kind = 'ingredients') AS ingredients,
+                        count(c.id) FILTER (WHERE c.kind = 'step') AS steps,
+                        count(DISTINCT c.position) FILTER (WHERE c.kind = 'step') AS distinct_steps,
+                        min(c.position) FILTER (WHERE c.kind = 'step') AS first,
+                        max(c.position) FILTER (WHERE c.kind = 'step') AS last
+                 FROM recipe r LEFT JOIN {t} c ON c.recipe_id = r.id
+                 GROUP BY r.id) per_recipe""").format(t=t)).fetchone()
+    null_embeddings = conn.execute(
+        sql.SQL("SELECT count(*) FROM {t} WHERE embedding IS NULL").format(t=t)).fetchone()[0]
+    # ADR-0001: every copied filter attribute still matches the recipe tables
+    drifted = conn.execute(sql.SQL(
+        """SELECT count(*)
+           FROM {t} c
+           JOIN recipe r ON r.id = c.recipe_id
+           JOIN category cat ON cat.id = r.category_id
+           LEFT JOIN recipe_nutrition nu ON nu.recipe_id = r.id
+           WHERE (c.category, c.total_minutes, c.prep_minutes, c.cook_minutes, c.rating, c.rating_count,
+                  c.servings, c.calories, c.protein_g, c.fat_g, c.carbohydrates_g, c.sodium_mg)
+                 IS DISTINCT FROM
+                 (cat.name, r.total_minutes, r.prep_minutes, r.cook_minutes, r.rating, r.rating_count,
+                  r.servings, nu.calories, nu.protein_g, nu.fat_g, nu.carbohydrates_g, nu.sodium_mg)""").format(
+        t=t)).fetchone()[0]
+    checks = [
+        ("every Recipe has exactly 1 Summary chunk", per_recipe[0]),
+        ("every Recipe has exactly 1 Ingredients chunk", per_recipe[1]),
+        ("every Recipe has at least 1 Step chunk", per_recipe[2]),
+        ("Step positions run 1..n with no gaps", per_recipe[3]),
+        ("no null embeddings", null_embeddings),
+        ("ADR-0001 consistency check returns 0", drifted),
+    ]
+    return [check for check, failures in checks if failures]
 
 
 def index_sql(table: str, index: str) -> sql.Composed:
@@ -279,15 +391,98 @@ def index_sql(table: str, index: str) -> sql.Composed:
     return sql.Composed([sql.Identifier(names[p]) if i % 2 else sql.SQL(p) for i, p in enumerate(parts)])
 
 
-def cmd_index(conn):
-    conn.execute(index_sql("chunk", "chunk_search_idx"))
-    conn.commit()
-    print("chunk_search_idx built")
+def finish(conn, name: str):
+    """Index staging, attach it as the strategy's partition and mark it loaded, in one go.
+    The attach adopts the index (same definition as the parent's), so nothing is rebuilt."""
+    with conn.transaction():
+        conn.execute(index_sql(staging(name), f"{partition(name)}_search_idx"))  # also ANALYZEs it
+        conn.execute(sql.SQL("ALTER TABLE chunk ATTACH PARTITION {t} FOR VALUES IN ({name})").format(
+            t=sql.Identifier(staging(name)), name=sql.Literal(name)))
+        conn.execute(sql.SQL("ALTER TABLE {t} RENAME TO {p}").format(
+            t=sql.Identifier(staging(name)), p=sql.Identifier(partition(name))))
+        conn.execute("ANALYZE chunk")  # the parent's stats; autovacuum never analyzes a partitioned table
+        conn.execute("UPDATE chunking_strategy SET loaded_at = now() WHERE name = %s", [name])
+
+
+def discard(conn, name: str):
+    """Remove a strategy's partition or staging table, and its registry row."""
+    with conn.transaction():
+        conn.execute(sql.SQL("DROP TABLE IF EXISTS {p}, {t}").format(
+            p=sql.Identifier(partition(name)), t=sql.Identifier(staging(name))))
+        conn.execute("DELETE FROM chunking_strategy WHERE name = %s", [name])
+
+
+@contextmanager
+def strategy_lock(conn, name: str):
+    """Holds the strategy's advisory lock, so a second chunk or drop of it fails fast."""
+    key = f"ingest:{name}"
+    if not conn.execute("SELECT pg_try_advisory_lock(hashtext(%s))", [key]).fetchone()[0]:
+        sys.exit(f"{name} is already being built or dropped by another run")
+    try:
+        yield
+    finally:
+        conn.execute("SELECT pg_advisory_unlock(hashtext(%s))", [key])
+
+
+def is_loaded(conn, name: str) -> bool | None:
+    """None when the strategy isn't registered."""
+    row = conn.execute("SELECT loaded_at IS NOT NULL FROM chunking_strategy WHERE name = %s", [name]).fetchone()
+    return None if row is None else row[0]
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+def cmd_chunk(conn, name: str):
+    if name not in STRATEGIES:
+        sys.exit(f"unknown strategy {name!r}; known: {', '.join(sorted(STRATEGIES))}")
+    with strategy_lock(conn, name):
+        state = is_loaded(conn, name)
+        if state:
+            sys.exit(f"{name} is loaded; run `drop {name}` first")
+        if state is False:
+            print(f"{name}: discarding an unfinished build", flush=True)
+            discard(conn, name)
+        register(conn, name)
+        load_chunks(conn, name)
+        problems = staging_problems(conn, name)
+        if problems:
+            sys.exit(f"{name} stays unloaded; check failed: {'; '.join(problems)}")
+        finish(conn, name)
+    print(f"{name} loaded")
+
+
+def cmd_drop(conn, name: str, yes: bool):
+    with strategy_lock(conn, name):
+        state = is_loaded(conn, name)
+        if state is None:
+            sys.exit(f"{name} is not built; nothing to drop")
+        if state and not yes:
+            n = conn.execute("SELECT count(*) FROM chunk WHERE strategy = %s", [name]).fetchone()[0]
+            sys.exit(f"{name} is loaded with {n} chunks; rerun with --yes to drop it")
+        discard(conn, name)
+    print(f"{name} dropped")
+
+
+def run(conn, argv: list[str]):
+    parser = argparse.ArgumentParser(prog="ingest.py", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    cmds = parser.add_subparsers(dest="cmd", required=True)
+    cmds.add_parser("load")
+    cmds.add_parser("chunk").add_argument("name")
+    drop = cmds.add_parser("drop")
+    drop.add_argument("name")
+    drop.add_argument("--yes", action="store_true", help="drop even if loaded")
+    a = parser.parse_args(argv)
+    if a.cmd == "load":
+        cmd_load(conn)
+    elif a.cmd == "chunk":
+        cmd_chunk(conn, a.name)
+    else:
+        cmd_drop(conn, a.name, a.yes)
 
 
 if __name__ == "__main__":
-    cmds = {"load": cmd_load, "chunk": cmd_chunk, "index": cmd_index}
-    if len(sys.argv) != 2 or sys.argv[1] not in cmds:
-        sys.exit(__doc__)
-    with psycopg.connect(DATABASE_URL) as conn:
-        cmds[sys.argv[1]](conn)
+    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
+        run(conn, sys.argv[1:])
