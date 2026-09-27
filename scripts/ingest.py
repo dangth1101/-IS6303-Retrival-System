@@ -245,6 +245,7 @@ def cmd_load(conn):
 
         if not CSV_PATH.exists():
             print(f"downloading {CSV_URL}")
+            CSV_PATH.parent.mkdir(exist_ok=True)  # data/ is gitignored, so a fresh clone lacks it
             urllib.request.urlretrieve(CSV_URL, CSV_PATH)
         with open(CSV_PATH, newline="", encoding="utf-8") as f:
             rows = list(csv.DictReader(f))

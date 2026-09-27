@@ -18,8 +18,8 @@ One table comparing 4 configs × every loaded Chunking strategy on Recall@5/10/2
 - [x] Phase 2: ground truth (queries + qrels): `eval/queries.jsonl`
 - [x] Phase 5: metrics engine, markdown table, JSON/CSV export (`scripts/evaluate.py`, all 4 configs)
 - [ ] Phase 6: failure analyzer (`scripts/failures.py`, done), latency vs accuracy, report sections
-- [ ] README with run steps
-- [ ] Ollama (`nomic-embed-text`) documented or added to `docker-compose.yml`
+- [x] README with run steps
+- [x] Ollama (`nomic-embed-text`) documented or added to `docker-compose.yml` (`README.md`)
 
 ## Flow
 

@@ -1,3 +1,4 @@
+import csv
 import threading
 
 import psycopg
@@ -246,6 +247,28 @@ def test_load_refuses_while_strategies_exist_and_names_them(recipes):
     with pytest.raises(SystemExit, match="drop strategies first: semantic, sentence"):
         ingest.run(recipes, ["load"])
     assert recipes.execute("SELECT count(*) FROM recipe").fetchone()[0] == len(RECIPES)
+
+
+def test_load_downloads_the_csv_into_a_missing_data_folder(db, tmp_path, monkeypatch):
+    """A fresh clone has no data/ (it's gitignored)."""
+    csv_path = tmp_path / "data" / "recipe.csv"
+    monkeypatch.setattr(ingest, "CSV_PATH", csv_path)
+    row = {"url": "u1", "title": "Toast", "description": "Nice.", "directions": "Toast the bread.",
+           "image": "", "category": "Main", "author": "Ann", "rating": "4.5", "rating_count": "10",
+           "review_count": "3", "prep_time": "5 mins", "cook_time": "", "total_time": "5 mins",
+           "servings": "2", "yields": "", "ingredients": "2 slices bread",
+           **{c: "" for c in ingest.NUTRITION}}
+
+    def fake_download(url, path):
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=row)
+            w.writeheader()
+            w.writerow(row)
+    monkeypatch.setattr(ingest.urllib.request, "urlretrieve", fake_download)
+
+    ingest.run(db, ["load"])
+    assert csv_path.exists()
+    assert db.execute("SELECT title FROM recipe").fetchall() == [("Toast",)]
 
 
 def test_the_old_index_command_is_gone(recipes):
