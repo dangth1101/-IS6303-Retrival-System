@@ -1,0 +1,72 @@
+"""Evaluation metrics for known-item search: one relevant Recipe per query, binary relevance.
+
+Pure: ranked Recipe ids in, a metrics table out. Nothing here touches the DB.
+With a single relevant Recipe at rank r (1-based, counted over the top DEPTH unique Recipes):
+    Recall@k = 1 if r <= k else 0
+    RR       = 1 / r, or 0 if the Recipe isn't in the top DEPTH
+    nDCG@k   = 1 / log2(r + 1) if r <= k else 0   (the ideal DCG is 1)
+Each is averaged over every query in the Query set; a query with no results is a miss.
+"""
+
+import math
+from collections.abc import Iterable, Mapping
+
+import numpy as np
+
+DEPTH = 20
+RECALL_AT = (5, 10, 20)
+NDCG_AT = (5, 10)
+COLUMNS = [*(f"recall@{k}" for k in RECALL_AT), "mrr", *(f"ndcg@{k}" for k in NDCG_AT)]
+
+Key = tuple[str, str, str]  # (config, strategy, query id)
+
+
+def dedupe(recipe_ids: Iterable[int], depth: int = DEPTH) -> list[int]:
+    """Each Recipe once, at its first appearance, cut to `depth`."""
+    out: list[int] = []
+    for rid in recipe_ids:
+        if rid not in out:
+            out.append(rid)
+            if len(out) == depth:
+                break
+    return out
+
+
+def rank_of(relevant: int, ranked: Iterable[int]) -> int | None:
+    """1-based rank of the relevant Recipe among the top DEPTH unique Recipes, or None."""
+    top = dedupe(ranked)
+    return top.index(relevant) + 1 if relevant in top else None
+
+
+def query_scores(rank: int | None) -> dict[str, float]:
+    scores = {f"recall@{k}": float(rank is not None and rank <= k) for k in RECALL_AT}
+    scores["mrr"] = 1 / rank if rank else 0.0
+    for k in NDCG_AT:
+        scores[f"ndcg@{k}"] = 1 / math.log2(rank + 1) if rank and rank <= k else 0.0
+    return scores
+
+
+def metrics_table(relevant: Mapping[str, int], runs: Mapping[Key, list[int]]) -> dict[tuple[str, str], dict]:
+    """(config, strategy) -> averaged metrics plus the query count.
+
+    `relevant` is query id -> its Recipe. Every (config, strategy) seen in `runs` is scored over
+    every query in `relevant`; a query missing from `runs` counts as a miss.
+    """
+    pairs = dict.fromkeys((c, s) for c, s, _ in runs)  # insertion order, no duplicates
+    table = {}
+    for config, strategy in pairs:
+        per_query = [query_scores(rank_of(rid, runs.get((config, strategy, qid), [])))
+                     for qid, rid in relevant.items()]
+        n = len(per_query)
+        table[config, strategy] = {col: sum(q[col] for q in per_query) / n if n else 0.0 for col in COLUMNS}
+        table[config, strategy]["queries"] = n
+    return table
+
+
+def latency_summary(ms: Iterable[float]) -> dict[str, float]:
+    """p50 and p95 in milliseconds (linear interpolation)."""
+    values = list(ms)
+    if not values:
+        return {"p50_ms": 0.0, "p95_ms": 0.0}
+    p50, p95 = np.percentile(values, [50, 95])
+    return {"p50_ms": float(p50), "p95_ms": float(p95)}
