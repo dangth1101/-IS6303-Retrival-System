@@ -6,6 +6,7 @@
 
 \timing on
 SET maintenance_work_mem = '2GB';  -- each index is ~0.5-0.6 GB; this session only
+SET max_parallel_maintenance_workers = 0;  -- a parallel build puts the graph in /dev/shm, 64 MB in Docker
 
 CREATE INDEX chunk_fixed_embedding_hnsw ON chunk_fixed
 USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
