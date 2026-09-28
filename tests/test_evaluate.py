@@ -217,6 +217,15 @@ def test_a_run_records_the_winning_chunk_kind_and_the_titles_it_ranked(loaded_db
     assert titles == {("1", "u0", "Garlic Shrimp"), ("2", "u1", "Toast"), ("3", "u2", "Tea")}
 
 
+def test_recipes_csv_lists_a_known_recipe_no_config_found(loaded_db, tmp_path):
+    query_set = tmp_path / "queries.jsonl"
+    query_set.write_text(json.dumps({"query_id": "q001", "text": "steeped tea", "recipe_id": 2,
+                                     "recipe_title": "Toast"}) + "\n")
+    run_dir = evaluate.run(loaded_db, lambda text: "", configs=["sparse"], query_set=query_set, out=tmp_path)
+    assert read_csv(run_dir / "per_query.csv")[0]["rank"] == ""  # Sparse finds Tea, not Toast
+    assert {r["title"] for r in read_csv(run_dir / "recipes.csv")} == {"Toast", "Tea"}
+
+
 def test_a_run_describes_the_corpus_it_searched(loaded_db, query_set, tmp_path):
     run_dir = evaluate.run(loaded_db, lambda text: "", configs=["sparse"], query_set=query_set, out=tmp_path)
     corpus = json.loads((run_dir / "corpus.json").read_text())
@@ -230,6 +239,7 @@ def test_a_run_describes_the_corpus_it_searched(loaded_db, query_set, tmp_path):
     assert sentence["step_chars"]["min"] == len("Toast the bread.")
     assert sum(sentence["step_chars"]["bins"].values()) == sentence["chunks"]["step"]
     assert corpus["query_recipe_categories"] == {"1": "Main", "3": "Main"}
+    assert corpus["category_recipes"] == {"Main": 3}
 
 
 def test_the_command_runs_one_named_arm_and_no_hand_picked_configs():

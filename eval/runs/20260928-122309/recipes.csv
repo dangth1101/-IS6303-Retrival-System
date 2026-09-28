@@ -361,6 +361,7 @@ recipe_id,url,title
 1264,https://www.allrecipes.com/recipe/269764/chocolate-banana-muffins/,Chocolate Banana Muffins
 1266,https://www.allrecipes.com/recipe/44989/quick-and-easy-green-chile-chicken-enchilada-casserole/,Quick and Easy Green Chile Chicken Enchilada Casserole
 1274,https://www.allrecipes.com/recipe/16617/no-bake-cookies-v/,No Bake Cookies V
+1275,https://www.allrecipes.com/recipe/260109/instant-pot-chicken-cacciatore/,Instant Pot® Chicken Cacciatore
 1279,https://www.allrecipes.com/recipe/84717/green-chili-and-cheese-chicken/,Green Chili and Cheese Chicken
 1282,https://www.allrecipes.com/recipe/283895/bourbon-and-baby-bella-mushroom-sauce/,Bourbon and Baby Bella Mushroom Sauce
 1286,https://www.allrecipes.com/recipe/7245/jays-signature-pizza-crust/,Jay's Signature Pizza Crust
@@ -739,6 +740,7 @@ recipe_id,url,title
 2603,https://www.allrecipes.com/recipe/46570/basic-quiche-by-shelly/,Basic Quiche by Shelly
 2609,https://www.allrecipes.com/recipe/213238/indian-fish-curry/,Indian Fish Curry
 2611,https://www.allrecipes.com/recipe/16466/chicken-salad-with-bacon-lettuce-and-tomato/,"Chicken Salad with Bacon, Lettuce, and Tomato"
+2612,https://www.allrecipes.com/recipe/89993/award-winning-chili-con-carne/,Award Winning Chili Con Carne
 2613,https://www.allrecipes.com/recipe/236866/texas-style-baked-beans/,Texas-Style Baked Beans
 2615,https://www.allrecipes.com/recipe/272786/tuna-avocado-salad/,Tuna Avocado Salad
 2619,https://www.allrecipes.com/recipe/216641/antipasto-salad-ii/,Antipasto Salad II
@@ -1206,6 +1208,7 @@ recipe_id,url,title
 4165,https://www.allrecipes.com/recipe/171001/lobster-mac-and-cheese/,Lobster Mac and Cheese
 4169,https://www.allrecipes.com/recipe/214551/slow-cooker-bolognese/,Slow Cooker Bolognese
 4171,https://www.allrecipes.com/recipe/283229/air-fryer-catfish-nuggets/,Air Fryer Catfish Nuggets
+4172,https://www.allrecipes.com/recipe/222973/easy-after-work-chicken-francaise/,Easy After Work Chicken Francaise
 4184,https://www.allrecipes.com/recipe/169749/pork-medallions-with-balsamic-vinegar-and-capers/,Pork Medallions with Balsamic Vinegar and Capers
 4188,https://www.allrecipes.com/recipe/222618/spinach-mushroom-omelet/,Spinach Mushroom Omelet
 4189,https://www.allrecipes.com/recipe/76012/whits-chicken-enchiladas/,Whit's Chicken Enchiladas
@@ -1455,6 +1458,7 @@ recipe_id,url,title
 4984,https://www.allrecipes.com/recipe/230384/sweet-dijon-basa-swai-fish-or-a-fish-of-your-choice/,Sweet Dijon Basa Swai Fish (or a fish of your choice)
 4992,https://www.allrecipes.com/recipe/239392/easy-curried-cauliflower-soup/,Easy Curried Cauliflower Soup
 5002,https://www.allrecipes.com/recipe/233632/roasted-cauliflower/,Roasted Cauliflower
+5004,https://www.allrecipes.com/recipe/235756/easy-mexican-sopes/,Easy Mexican Sopes
 5010,https://www.allrecipes.com/recipe/259480/spicy-chicken-noodles/,Spicy Chicken Noodles
 5012,https://www.allrecipes.com/recipe/276071/no-bake-cheesecake-with-condensed-milk/,No-Bake Cheesecake with Condensed Milk
 5017,https://www.allrecipes.com/recipe/29112/roasted-red-pepper-cream-sauce/,Roasted Red Pepper Cream Sauce
@@ -1757,6 +1761,7 @@ recipe_id,url,title
 6119,https://www.allrecipes.com/recipe/241544/easy-baked-doughnuts/,Easy Baked Doughnuts
 6120,https://www.allrecipes.com/recipe/13287/creamy-italian-white-bean-soup/,Creamy Italian White Bean Soup
 6121,https://www.allrecipes.com/recipe/223437/healthy-creamy-chicken-and-pasta/,Healthy Creamy Chicken and Pasta
+6127,https://www.allrecipes.com/recipe/48944/long-island-iced-tea/,Long Island Iced Tea
 6128,https://www.allrecipes.com/recipe/140879/brown-sugar-and-spice-dry-ham-rub/,Brown Sugar and Spice Dry Ham Rub
 6130,https://www.allrecipes.com/recipe/255939/yeast-free-cinnamon-rolls/,Yeast-Free Cinnamon Rolls
 6133,https://www.allrecipes.com/recipe/228224/chicken-stew-with-dumplings/,Chicken Stew with Dumplings
@@ -1877,6 +1882,7 @@ recipe_id,url,title
 6497,https://www.allrecipes.com/recipe/20920/zucchini-cornbread-casserole/,Zucchini Cornbread Casserole
 6501,https://www.allrecipes.com/recipe/279245/panko-crusted-tilapia/,Panko-Crusted Tilapia
 6503,https://www.allrecipes.com/recipe/157725/cheesy-buffalo-chicken-dip/,Cheesy Buffalo Chicken Dip
+6505,https://www.allrecipes.com/recipe/17485/wedding-cake/,Wedding Cake
 6506,https://www.allrecipes.com/recipe/273070/keto-pepperoni-pizza-with-fathead-crust/,Keto Pepperoni Pizza with Fathead Crust
 6509,https://www.allrecipes.com/recipe/234396/slow-cooker-philly-steak-sandwich-meat/,Slow Cooker Philly Steak Sandwich Meat
 6511,https://www.allrecipes.com/recipe/215511/tuscan-sausage-ragu/,Tuscan Sausage Ragu
@@ -2030,6 +2036,7 @@ recipe_id,url,title
 7019,https://www.allrecipes.com/recipe/9652/blueberry-drop-cookies/,Blueberry Drop Cookies
 7023,https://www.allrecipes.com/recipe/13394/velvety-chicken-corn-soup/,Velvety Chicken Corn Soup
 7027,https://www.allrecipes.com/recipe/89196/cheesy-chili-enchiladas/,Cheesy Chili Enchiladas
+7032,https://www.allrecipes.com/recipe/22238/scalloped-potatoes-and-pork-chops/,Scalloped Potatoes and Pork Chops
 7036,https://www.allrecipes.com/recipe/228122/herbed-scalloped-potatoes-and-onions/,Herbed Scalloped Potatoes and Onions
 7037,https://www.allrecipes.com/recipe/12594/moms-chocolate-meringue-pie/,Mom's Chocolate Meringue Pie
 7040,https://www.allrecipes.com/recipe/245010/sausage-and-pepper-penne/,Sausage and Pepper Penne
@@ -2104,6 +2111,7 @@ recipe_id,url,title
 7257,https://www.allrecipes.com/recipe/232265/very-veggie-and-beef-chili/,Very Veggie and Beef Chili
 7265,https://www.allrecipes.com/recipe/25160/summer-corn-salad/,Summer Corn Salad
 7287,https://www.allrecipes.com/recipe/10997/peanuttiest-peanut-butter-cookies/,Peanuttiest Peanut Butter Cookies
+7291,https://www.allrecipes.com/recipe/11843/irish-chicken-and-dumplings/,Irish Chicken and Dumplings
 7292,https://www.allrecipes.com/recipe/25590/chocolate-candy-bar-cake/,Chocolate Candy Bar Cake
 7296,https://www.allrecipes.com/recipe/219454/healthier-amazing-pork-tenderloin-in-the-slow-cooker/,Healthier Amazing Pork Tenderloin in the Slow Cooker
 7300,https://www.allrecipes.com/recipe/23570/best-ever-tuna-salad/,Best Ever Tuna Salad
@@ -2544,6 +2552,7 @@ recipe_id,url,title
 8745,https://www.allrecipes.com/recipe/218619/easy-bok-choy/,Easy Bok Choy
 8747,https://www.allrecipes.com/recipe/278806/air-fryer-chicken-cordon-bleu/,Air Fryer Chicken Cordon Bleu
 8750,https://www.allrecipes.com/recipe/280504/mediterranean-orzo-salad/,Mediterranean Orzo Salad
+8751,https://www.allrecipes.com/recipe/237358/hawaiian-ham-and-cheese-sliders/,Hawaiian Ham and Cheese Sliders
 8753,https://www.allrecipes.com/recipe/7460/butter-cake/,Butter Cake
 8757,https://www.allrecipes.com/recipe/23772/quiche/,Quiche
 8759,https://www.allrecipes.com/recipe/238544/fish-taco-sauce/,Fish Taco Sauce
@@ -3109,6 +3118,7 @@ recipe_id,url,title
 10510,https://www.allrecipes.com/recipe/256937/spicy-ahi-poke-salad/,Spicy Ahi Poke Salad
 10512,https://www.allrecipes.com/recipe/263335/citrus-salmon-with-new-potatoes/,Citrus Salmon with New Potatoes
 10514,https://www.allrecipes.com/recipe/232127/sweet-potato-salmon-fish-cakes/,Sweet Potato Salmon Fish Cakes
+10518,https://www.allrecipes.com/recipe/84135/matts-crab-clam-bisque/,Matt's Crab & Clam Bisque
 10521,https://www.allrecipes.com/recipe/12807/cheesy-catfish/,Cheesy Catfish
 10528,https://www.allrecipes.com/recipe/234883/spicy-kale-and-shrimp-soup/,Spicy Kale and Shrimp Soup
 10531,https://www.allrecipes.com/recipe/70963/tilapia-pitas/,Tilapia Pitas
@@ -3774,6 +3784,7 @@ recipe_id,url,title
 12550,https://www.allrecipes.com/recipe/234432/bacon-wrapped-citrus-shrimp/,Bacon Wrapped Citrus Shrimp
 12551,https://www.allrecipes.com/recipe/256817/ipa-ceviche-lettuce-wraps-with-bacon/,IPA Ceviche Lettuce Wraps with Bacon
 12553,https://www.allrecipes.com/recipe/168248/bow-tie-pasta-with-tomato-tuna-sauce/,Bow Tie Pasta with Tomato Tuna Sauce
+12562,https://www.allrecipes.com/recipe/265531/tilapia-de-jonghe/,Tilapia de Jonghe
 12564,https://www.allrecipes.com/recipe/282744/crab-and-shrimp-gumbo-with-okra/,Crab and Shrimp Gumbo with Okra
 12572,https://www.allrecipes.com/recipe/255551/light-and-cheesy-panko-crusted-cod/,Light and Cheesy Panko Crusted Cod
 12574,https://www.allrecipes.com/recipe/265788/japanese-style-crab-fried-brown-rice/,Japanese-Style Crab Fried Brown Rice
@@ -3993,6 +4004,7 @@ recipe_id,url,title
 13240,https://www.allrecipes.com/recipe/62723/almond-jelly/,Almond Jelly
 13245,https://www.allrecipes.com/recipe/177115/feta-stuffed-hamburgers/,Feta-Stuffed Hamburgers
 13249,https://www.allrecipes.com/recipe/35892/thai-chicken-with-basil-stir-fry/,Thai Chicken with Basil Stir Fry
+13252,https://www.allrecipes.com/recipe/7991/chocolate-cream-frosting/,Chocolate Cream Frosting
 13253,https://www.allrecipes.com/recipe/80683/traditional-chicken-curry/,Traditional Chicken Curry
 13256,https://www.allrecipes.com/recipe/255301/banana-chocolate-chip-cupcakes-with-cream-cheese-frosting/,Banana Chocolate Chip Cupcakes with Cream Cheese Frosting
 13257,https://www.allrecipes.com/recipe/22478/cheesy-vegetable-lasagna/,Cheesy Vegetable Lasagna
@@ -4564,6 +4576,7 @@ recipe_id,url,title
 15082,https://www.allrecipes.com/recipe/9569/neapolitan-cookies-i/,Neapolitan Cookies I
 15086,https://www.allrecipes.com/recipe/232887/baked-pumpkin-custard-from-eagle-brand/,Baked Pumpkin Custard from EAGLE BRAND®
 15091,https://www.allrecipes.com/recipe/168875/quinoa-veggie-salad-with-zesty-vinaigrette/,Quinoa Veggie Salad with Zesty Vinaigrette
+15093,https://www.allrecipes.com/recipe/89830/deep-fried-pork-steak/,Deep Fried Pork Steak
 15094,https://www.allrecipes.com/recipe/27021/cranberry-upside-down-sour-cream-cake/,Cranberry Upside-Down Sour Cream Cake
 15095,https://www.allrecipes.com/recipe/234401/renees-pear-crisp/,Renee's Pear Crisp
 15096,https://www.allrecipes.com/recipe/21098/zucchilattas/,Zucchilattas
@@ -5244,6 +5257,7 @@ recipe_id,url,title
 17174,https://www.allrecipes.com/recipe/237018/best-pecan-sandies/,Best Pecan Sandies
 17175,https://www.allrecipes.com/recipe/274323/natashas-out-of-this-world-instant-pot-meatballs/,Natasha's Out-Of-This World Instant Pot® Meatballs
 17176,https://www.allrecipes.com/recipe/258775/easy-doughnut-puffs/,Easy Doughnut Puffs
+17180,https://www.allrecipes.com/recipe/72998/high-altitude-angel-food-cake/,High-Altitude Angel Food Cake
 17181,https://www.allrecipes.com/recipe/221151/cream-cheesy-cubed-zucchini-with-lemon-and-oregano/,Cream Cheesy Cubed Zucchini with Lemon and Oregano
 17183,https://www.allrecipes.com/recipe/206356/gorgonzola-pear-pasta/,Gorgonzola Pear Pasta
 17186,https://www.allrecipes.com/recipe/216817/open-face-mozzarella-sandwich/,Open Face Mozzarella Sandwich
@@ -7360,6 +7374,7 @@ recipe_id,url,title
 23559,https://www.allrecipes.com/recipe/49165/vodka-sauce/,Vodka Sauce
 23569,https://www.allrecipes.com/recipe/16192/honey-barbecue-sauce/,Honey Barbecue Sauce
 23572,https://www.allrecipes.com/recipe/223512/fresh-sweet-corn-fritters/,Fresh Sweet Corn Fritters
+23573,https://www.allrecipes.com/recipe/11867/death-by-garlic/,Death By Garlic
 23578,https://www.allrecipes.com/recipe/19842/mango-chutney/,Mango Chutney
 23581,https://www.allrecipes.com/recipe/194914/smothered-collard-greens-and-cabbage/,Smothered Collard Greens and Cabbage
 23582,https://www.allrecipes.com/recipe/237883/grilled-onions-and-potatoes/,Grilled Onions and Potatoes
@@ -7486,6 +7501,7 @@ recipe_id,url,title
 23963,https://www.allrecipes.com/recipe/234409/bops-broccoli-cauliflower-salad/,Bop's Broccoli Cauliflower Salad
 23969,https://www.allrecipes.com/recipe/17466/corn-and-avocado-salad/,Corn and Avocado Salad
 23973,https://www.allrecipes.com/recipe/234096/hot-and-tangy-german-potato-salad/,Hot and Tangy German Potato Salad
+23975,https://www.allrecipes.com/recipe/25168/salata/,Salata
 23979,https://www.allrecipes.com/recipe/233437/grilled-vegetable-salad-with-fresh-herb-vinaigrette/,Grilled Vegetable Salad with Fresh Herb Vinaigrette
 23980,https://www.allrecipes.com/recipe/50882/grilled-vegetable-salad/,Grilled Vegetable Salad
 23981,https://www.allrecipes.com/recipe/24382/rosies-bok-choy-salad/,Rosie's Bok Choy Salad
@@ -7574,6 +7590,7 @@ recipe_id,url,title
 24267,https://www.allrecipes.com/recipe/241771/chicken-broccoli-alfredo-with-fettuccine/,Chicken & Broccoli Alfredo with Fettuccine
 24273,https://www.allrecipes.com/recipe/14671/beef-heart-braised-in-wine/,Beef Heart Braised in Wine
 24276,https://www.allrecipes.com/recipe/280588/hamburger-steaks-with-peppers-onions-and-mushrooms/,"Hamburger Steaks with Peppers, Onions, and Mushrooms"
+24278,https://www.allrecipes.com/recipe/283547/easy-spring-rolls/,Easy Spring Rolls
 24279,https://www.allrecipes.com/recipe/232249/ham-bone-chowder/,Ham Bone Chowder
 24280,https://www.allrecipes.com/recipe/42172/elaines-sweet-and-tangy-loose-beef-bbq/,Elaine's Sweet and Tangy Loose Beef BBQ
 24281,https://www.allrecipes.com/recipe/261457/whole30-coconut-chicken-curry/,Whole30® Coconut Chicken Curry
@@ -8268,6 +8285,7 @@ recipe_id,url,title
 26578,https://www.allrecipes.com/recipe/17251/broccoli-cheese-cornbread/,Broccoli Cheese Cornbread
 26588,https://www.allrecipes.com/recipe/220494/chef-johns-holiday-pumpkin-bread/,Chef John's Holiday Pumpkin Bread
 26589,https://www.allrecipes.com/recipe/230579/applesauce-pumpkin-bread/,Applesauce Pumpkin Bread
+26592,https://www.allrecipes.com/recipe/85328/malasadas-dois/,Malasadas Dois
 26596,https://www.allrecipes.com/recipe/35815/blueberry-peach-muffins/,Blueberry Peach Muffins
 26599,https://www.allrecipes.com/recipe/270200/cranberry-orange-rolls/,Cranberry Orange Rolls
 26602,https://www.allrecipes.com/recipe/276323/carrot-apple-muffins/,Carrot-Apple Muffins
@@ -9303,6 +9321,7 @@ recipe_id,url,title
 30031,https://www.allrecipes.com/recipe/231746/slow-cooker-chicken-and-mushroom-stew/,Slow Cooker Chicken and Mushroom Stew
 30032,https://www.allrecipes.com/recipe/230326/gnocchi-with-chicken-pesto-and-fresh-mozzarella/,"Gnocchi with Chicken, Pesto and Fresh Mozzarella"
 30036,https://www.allrecipes.com/recipe/237123/beef-and-potato-pie/,Beef and Potato Pie
+30038,https://www.allrecipes.com/recipe/12432/cornish-finnish-michigan-pasties/,Cornish Finnish Michigan Pasties
 30042,https://www.allrecipes.com/recipe/163001/bourbon-mango-pulled-pork/,Bourbon-Mango Pulled Pork
 30043,https://www.allrecipes.com/recipe/262044/chef-johns-butternut-bisque/,Chef John's Butternut Bisque
 30050,https://www.allrecipes.com/recipe/148238/gouda-and-spinach-stuffed-pork-chops/,Gouda and Spinach Stuffed Pork Chops
@@ -9594,6 +9613,7 @@ recipe_id,url,title
 31037,https://www.allrecipes.com/recipe/260870/candied-almond-bark-popcorn/,Candied Almond Bark Popcorn
 31042,https://www.allrecipes.com/recipe/239963/raisin-butter-tart-squares/,Raisin Butter Tart Squares
 31047,https://www.allrecipes.com/recipe/24631/creamy-veggie-fondue/,Creamy Veggie Fondue
+31049,https://www.allrecipes.com/recipe/262590/guacamole-with-corn/,Guacamole with Corn
 31053,https://www.allrecipes.com/recipe/254295/mini-pumpkin-cheesecakes-from-reddi-wip/,Mini Pumpkin Cheesecakes from Reddi-wip®
 31055,https://www.allrecipes.com/recipe/178551/green-onion-ranch-dip/,Green Onion Ranch Dip
 31057,https://www.allrecipes.com/recipe/230370/confetti-white-puppy-chow/,Confetti White Puppy Chow

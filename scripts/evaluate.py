@@ -327,12 +327,17 @@ def corpus(conn, strategy_names: list[str], relevant: dict[str, int]) -> dict:
     rows = conn.execute("""SELECT r.id, c.name FROM recipe r JOIN category c ON c.id = r.category_id
                            WHERE r.id = ANY(%s) ORDER BY r.id""", [sorted(set(relevant.values()))]).fetchall()
     out["query_recipe_categories"] = {str(rid): cat for rid, cat in rows}
+    out["category_recipes"] = dict(conn.execute("""SELECT c.name, count(*) FROM recipe r
+                                                   JOIN category c ON c.id = r.category_id
+                                                   GROUP BY c.name ORDER BY count(*) DESC, c.name""").fetchall())
     return out
 
 
-def write_recipes(conn, run_dir: Path, ranked: dict) -> None:
-    """recipes.csv: id, url and title of every Recipe in any ranked list, so the report never maps ids itself."""
-    ids = sorted({rid for by_key in ranked.values() for top in by_key.values() for rid in top})
+def write_recipes(conn, run_dir: Path, ranked: dict, relevant: dict[str, int]) -> None:
+    """recipes.csv: id, url and title of every Recipe in any ranked list and every query's known Recipe (even one
+    no config found), so the report never maps ids itself."""
+    ids = sorted({rid for by_key in ranked.values() for top in by_key.values() for rid in top}
+                 | set(relevant.values()))
     with open(run_dir / "recipes.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["recipe_id", "url", "title"])
@@ -426,7 +431,7 @@ def run(conn, embedder: Embedder, scorer: Scorer | None = None, *, configs: list
     }
     run_dir = out / started.strftime("%Y%m%d-%H%M%S")
     write_run(run_dir, settings, rows, relevant, ranked, timings, kinds)
-    write_recipes(conn, run_dir, ranked)
+    write_recipes(conn, run_dir, ranked, relevant)
     (run_dir / "corpus.json").write_text(json.dumps(corpus(conn, strategy_names, relevant), indent=2) + "\n")
     return run_dir
 

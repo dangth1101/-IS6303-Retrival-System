@@ -394,5 +394,29 @@
     "32446": "appetizers-and-snacks",
     "32468": "appetizers-and-snacks",
     "32535": "side-dish"
+  },
+  "category_recipes": {
+    "appetizers-and-snacks": 3895,
+    "desserts": 3865,
+    "side-dish": 3179,
+    "world-cuisine": 3090,
+    "main-dish": 2938,
+    "salad": 2803,
+    "bread": 2647,
+    "soups-stews-and-chili": 2628,
+    "meat-and-poultry": 1873,
+    "breakfast-and-brunch": 1344,
+    "seafood": 1325,
+    "trusted-brands-recipes-and-tips": 1203,
+    "uncategorized": 596,
+    "everyday-cooking": 543,
+    "drinks": 402,
+    "fruits-and-vegetables": 254,
+    "pasta-and-noodles": 117,
+    "holidays-and-events": 11,
+    "bbq-grilling": 2,
+    "ingredients": 2,
+    "251": 1,
+    "515": 1
   }
 }
