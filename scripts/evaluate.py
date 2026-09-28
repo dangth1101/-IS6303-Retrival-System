@@ -2,12 +2,14 @@
 
     uv run scripts/evaluate.py                                    # every config, every loaded strategy
     uv run scripts/evaluate.py --configs dense --strategies fixed --limit 20
+    uv run scripts/evaluate.py --arm rerank-top-20                # an Ablation run, see ARMS
 
 Configs: sparse, dense, fusion (the Fusion baseline: the candidates Hybrid would rerank, in RRF order;
 eval only) and hybrid (RRF + Reranking, as the API serves it). Both call the API's own Hybrid code.
 
 Prints a markdown table and writes a run folder under eval/runs/<timestamp>/:
-settings.json, metrics.json, metrics.csv, per_query.csv (ranks and latencies), table.md.
+settings.json, metrics.json, metrics.csv, per_query.csv (ranks, latencies, the winning Chunk kind), table.md,
+recipes.csv (titles of every ranked Recipe) and corpus.json (what was searched). Config order rotates per query.
 Runs in the project env (not a PEP 723 script) because it calls the API's retrieval code.
 """
 
@@ -58,6 +60,8 @@ class SearchInput:
     params: SearchParams
     qvec: str | None  # the query embedding, if any config needs it
     scorer: Scorer | None  # the reranker, if Hybrid runs
+    rrf_k: int | None = None  # None: the served setting
+    rerank_top: int | None = None
 
 
 # A config's search takes a SearchInput, times its own stages, and returns ranked Chunks.
@@ -73,11 +77,11 @@ def dense(conn, q: SearchInput, watch):
 
 
 def fusion(conn, q: SearchInput, watch):
-    return retrieval.fused_candidates(conn, q.params, q.qvec, watch)
+    return retrieval.fused_candidates(conn, q.params, q.qvec, watch, rrf_k=q.rrf_k, rerank_top=q.rerank_top)
 
 
 def hybrid(conn, q: SearchInput, watch):
-    return retrieval.hybrid(conn, q.params, q.qvec, q.scorer, watch)
+    return retrieval.hybrid(conn, q.params, q.qvec, q.scorer, watch, rrf_k=q.rrf_k, rerank_top=q.rerank_top)
 
 
 @dataclass(frozen=True)
@@ -94,9 +98,32 @@ CONFIGS = {
 }
 STAGES = list(dict.fromkeys(st for c in CONFIGS.values() for st in c.stages))  # CSV column order
 
+# Ablation run arms: each runs its configs twice per query, as "default" and as "arm" with these settings.
+# rerank_model: the arm's reranker, loaded by the command; probe: paradedb.vector_cluster_max_probe for Dense.
+ARMS = {
+    "reranker-minilm-l6": {"configs": ["hybrid"], "set": {"rerank_model": "cross-encoder/ms-marco-MiniLM-L6-v2"}},
+    "reranker-mxbai-base": {"configs": ["hybrid"], "set": {"rerank_model": "mixedbread-ai/mxbai-rerank-base-v1"}},
+    "reranker-bge-v2-m3": {"configs": ["hybrid"], "set": {"rerank_model": "BAAI/bge-reranker-v2-m3"}},
+    "rrf-k-10": {"configs": ["fusion"], "set": {"rrf_k": 10}},
+    "rrf-k-100": {"configs": ["fusion"], "set": {"rrf_k": 100}},
+    "rerank-top-20": {"configs": ["hybrid"], "set": {"rerank_top": 20}},
+    "rerank-top-100": {"configs": ["hybrid"], "set": {"rerank_top": 100}},
+    "exact-dense": {"configs": ["dense", "fusion", "hybrid"], "set": {"probe": 1.0}},
+}
+PROBE = "paradedb.vector_cluster_max_probe"
+
 
 def any_stage(configs, stage: str) -> bool:
     return any(stage in CONFIGS[c].stages for c in configs)
+
+
+def rotated(items: list, i: int) -> list:
+    """items starting at position i mod len, so across queries each config takes a turn going first.
+
+    A fixed order let later configs run on a cache the earlier ones warmed, which skewed stage times.
+    """
+    start = i % len(items)
+    return items[start:] + items[:start]
 
 
 def read_queries(path: Path, limit: int | None = None) -> list[dict]:
@@ -105,13 +132,25 @@ def read_queries(path: Path, limit: int | None = None) -> list[dict]:
 
 
 def search_all(conn, queries: list[dict], strategy_names: list[str], configs: list[str], embedder: Embedder,
-               scorer: Scorer | None):
-    """Ranked Recipe ids and stage timings per (config, strategy, query id).
+               scorer: Scorer | None, arm: dict | None = None, arm_scorer: Scorer | None = None):
+    """Ranked Recipe ids, stage timings and best Chunk kind per variant, then per (config, strategy, query id).
+
+    The best Chunk kind is the kind of the known Recipe's top Chunk in the list, or "" if it isn't in the top.
+
+    Without an arm the only variant is "default". With one, each config also runs as "arm" with the arm's
+    settings, interleaved with its default per query so both see the same machine state.
 
     The first query runs once more as an uncounted warm-up, so caches, connections and the reranker are hot.
+    The config order rotates per query (see `rotated`).
     Each query is embedded once and shared by every strategy and config that needs it.
     """
-    ranked, timings = {}, {}
+    variants = ["default", "arm"] if arm else ["default"]
+    ranked = {v: {} for v in variants}
+    timings = {v: {} for v in variants}
+    kinds = {v: {} for v in variants}
+    sets = {"default": {}, "arm": arm["set"] if arm else {}}
+    probes = {"default": _db_settings(conn)["vector_cluster_max_probe"], "arm": sets["arm"].get("probe")}
+    pairs = [(c, v) for c in configs for v in variants]
     needs_embedding = any_stage(configs, "embed")
     for i, q in enumerate([queries[0], *queries]):
         query_watch, qvec = Stopwatch(), None
@@ -120,8 +159,13 @@ def search_all(conn, queries: list[dict], strategy_names: list[str], configs: li
                 qvec = embedder(q["text"])
         for strategy in strategy_names:
             # k=MAX_K: served Hybrid cuts to k, and the eval wants its full list to dedupe
-            query = SearchInput(SearchParams(q=q["text"], strategy=strategy, k=config.MAX_K), qvec, scorer)
-            for c in configs:
+            params = SearchParams(q=q["text"], strategy=strategy, k=config.MAX_K)
+            for c, v in rotated(pairs, i):
+                knobs = sets[v]
+                query = SearchInput(params, qvec, arm_scorer if "rerank_model" in knobs else scorer,
+                                    rrf_k=knobs.get("rrf_k"), rerank_top=knobs.get("rerank_top"))
+                if probes["arm"] is not None:  # outside the stopwatch, and paid by both variants alike
+                    conn.execute("SELECT set_config(%s, %s, false)", [PROBE, str(probes[v])])
                 watch = Stopwatch()
                 hits = CONFIGS[c].search(conn, query, watch)
                 if i == 0:
@@ -129,9 +173,13 @@ def search_all(conn, queries: list[dict], strategy_names: list[str], configs: li
                 if "embed" in CONFIGS[c].stages:
                     watch["embed"] = query_watch["embed"]
                 key = (c, strategy, q["query_id"])
-                ranked[key] = metrics.dedupe(h.recipe_id for h in hits)
-                timings[key] = watch
-    return ranked, timings
+                ranked[v][key] = metrics.dedupe(h.recipe_id for h in hits)
+                timings[v][key] = watch
+                found = metrics.rank_of(q["recipe_id"], ranked[v][key])
+                kinds[v][key] = next(h.kind for h in hits if h.recipe_id == q["recipe_id"]) if found else ""
+    if probes["arm"] is not None:
+        conn.execute("SELECT set_config(%s, %s, false)", [PROBE, str(probes["default"])])
+    return ranked, timings, kinds
 
 
 def resolve_strategies(conn, chosen: list[str] | None) -> list[str]:
@@ -145,7 +193,7 @@ def resolve_strategies(conn, chosen: list[str] | None) -> list[str]:
     return chosen
 
 
-def summarize(relevant, ranked, timings) -> list[dict]:
+def summarize(relevant, ranked, timings, variant: str = "default") -> list[dict]:
     rows = []
     for (c, s), scores in metrics.metrics_table(relevant, ranked).items():
         keys = [k for k in timings if k[:2] == (c, s)]
@@ -154,7 +202,8 @@ def summarize(relevant, ranked, timings) -> list[dict]:
         for stage in CONFIGS[c].stages:
             latency[stage] = metrics.latency_summary(w[stage] for w in watches)
         short = sum(len(ranked[k]) < metrics.DEPTH for k in keys)
-        rows.append({"config": c, "strategy": s, **scores, "short_lists": short, "latency_ms": latency})
+        rows.append({"config": c, "variant": variant, "strategy": s, **scores, "short_lists": short,
+                     "latency_ms": latency})
     return rows
 
 
@@ -163,7 +212,8 @@ def markdown(rows: list[dict]) -> str:
     lines = ["| " + " | ".join(head) + " |", "|" + "---|" * 2 + "---:|" * (len(head) - 2)]
     for r in rows:
         total = r["latency_ms"]["total"]
-        cells = [r["config"], r["strategy"], *(f"{r[m]:.3f}" for m in metrics.COLUMNS),
+        label = r["config"] if r["variant"] == "default" else f"{r['config']} ({r['variant']})"
+        cells = [label, r["strategy"], *(f"{r[m]:.3f}" for m in metrics.COLUMNS),
                  f"{total['p50_ms']:.1f}", f"{total['p95_ms']:.1f}"]
         lines.append("| " + " | ".join(cells) + " |")
     n = rows[0]["queries"] if rows else 0
@@ -186,7 +236,58 @@ def _db_settings(conn) -> dict:
     return {"pg_search_version": version[0] if version else None, "vector_cluster_max_probe": float(probe[0])}
 
 
-def write_run(run_dir: Path, settings: dict, rows: list[dict], relevant, ranked, timings) -> None:
+def sorted_rows(ranked: dict) -> list:
+    """(variant, key, ranked ids) in a fixed order: query, strategy, config, variant. Rotation doesn't leak in."""
+    order = {c: n for n, c in enumerate(CONFIGS)}
+    rows = [(v, k, top) for v, by_key in ranked.items() for k, top in by_key.items()]
+    return sorted(rows, key=lambda r: (r[1][2], r[1][1], order[r[1][0]], r[0] != "default"))
+
+
+STEP_BIN = 50  # characters per bin in corpus.json's Step length histogram
+
+
+def corpus(conn, strategy_names: list[str], relevant: dict[str, int]) -> dict:
+    """What was searched: counts, each strategy's parameters, Chunks per kind and Step length in characters.
+
+    Characters, not tokens, because fixed cuts by tokens and semantic by characters. Step text excludes the
+    "<title>\n" line every Chunk starts with.
+    """
+    one = lambda sql, params=(): conn.execute(sql, params).fetchone()  # noqa: E731
+    params = {s["name"]: s["parameters"] for s in strategies.loaded(conn)}
+    out = {"recipes": one("SELECT count(*) FROM recipe")[0], "categories": one("SELECT count(*) FROM category")[0],
+           "strategies": {}}
+    step_len = "length(content) - position(E'\\n' IN content)"
+    for name in strategy_names:
+        chunks = dict(conn.execute("SELECT kind, count(*) FROM chunk WHERE strategy = %s GROUP BY kind",
+                                   [name]).fetchall())
+        lo, p10, median, p90, hi = one(
+            f"""SELECT min(n), percentile_cont(0.1) WITHIN GROUP (ORDER BY n),
+                       percentile_cont(0.5) WITHIN GROUP (ORDER BY n),
+                       percentile_cont(0.9) WITHIN GROUP (ORDER BY n), max(n)
+                FROM (SELECT {step_len} AS n FROM chunk WHERE strategy = %s AND kind = 'step') s""", [name])
+        bins = conn.execute(f"""SELECT ({step_len}) / %s * %s AS edge, count(*) FROM chunk
+                                WHERE strategy = %s AND kind = 'step' GROUP BY edge ORDER BY edge""",
+                            [STEP_BIN, STEP_BIN, name]).fetchall()
+        out["strategies"][name] = {
+            "parameters": params.get(name), "chunks": chunks,
+            "step_chars": {"min": lo, "p10": p10, "median": median, "p90": p90, "max": hi,
+                           "bin_width": STEP_BIN, "bins": {str(edge): n for edge, n in bins}}}
+    rows = conn.execute("""SELECT r.id, c.name FROM recipe r JOIN category c ON c.id = r.category_id
+                           WHERE r.id = ANY(%s) ORDER BY r.id""", [sorted(set(relevant.values()))]).fetchall()
+    out["query_recipe_categories"] = {str(rid): cat for rid, cat in rows}
+    return out
+
+
+def write_recipes(conn, run_dir: Path, ranked: dict) -> None:
+    """recipes.csv: id, url and title of every Recipe in any ranked list, so the report never maps ids itself."""
+    ids = sorted({rid for by_key in ranked.values() for top in by_key.values() for rid in top})
+    with open(run_dir / "recipes.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["recipe_id", "url", "title"])
+        w.writerows(conn.execute("SELECT id, url, title FROM recipe WHERE id = ANY(%s) ORDER BY id", [ids]))
+
+
+def write_run(run_dir: Path, settings: dict, rows: list[dict], relevant, ranked, timings, kinds) -> None:
     run_dir.mkdir(parents=True)
     (run_dir / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
     (run_dir / "metrics.json").write_text(json.dumps(rows, indent=2) + "\n")
@@ -194,21 +295,21 @@ def write_run(run_dir: Path, settings: dict, rows: list[dict], relevant, ranked,
     stage_cols = [f"{st}_{p}" for st in ["total", *STAGES] for p in ("p50_ms", "p95_ms")]
     with open(run_dir / "metrics.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["config", "strategy", "queries", *metrics.COLUMNS, "short_lists", *stage_cols])
+        w.writerow(["config", "variant", "strategy", "queries", *metrics.COLUMNS, "short_lists", *stage_cols])
         for r in rows:
             lat = r["latency_ms"]
-            w.writerow([r["config"], r["strategy"], r["queries"], *(round(r[m], 4) for m in metrics.COLUMNS),
-                        r["short_lists"],
+            w.writerow([r["config"], r["variant"], r["strategy"], r["queries"],
+                        *(round(r[m], 4) for m in metrics.COLUMNS), r["short_lists"],
                         *(round(lat[st][p], 2) if st in lat else "" for st in ["total", *STAGES]
                           for p in ("p50_ms", "p95_ms"))])
 
     with open(run_dir / "per_query.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["config", "strategy", "query_id", "recipe_id", "rank", "total_ms",
+        w.writerow(["config", "variant", "strategy", "query_id", "recipe_id", "rank", "best_kind", "total_ms",
                     *(f"{st}_ms" for st in STAGES), "top_recipe_ids"])
-        for (c, s, qid), top in ranked.items():
-            watch = timings[c, s, qid]
-            w.writerow([c, s, qid, relevant[qid], metrics.rank_of(relevant[qid], top) or "",
+        for v, (c, s, qid), top in sorted_rows(ranked):
+            watch = timings[v][c, s, qid]
+            w.writerow([c, v, s, qid, relevant[qid], metrics.rank_of(relevant[qid], top) or "", kinds[v][c, s, qid],
                         round(sum(watch.values()), 2),
                         *(round(watch[st], 2) if st in watch else "" for st in STAGES),
                         " ".join(map(str, top))])
@@ -218,8 +319,18 @@ def write_run(run_dir: Path, settings: dict, rows: list[dict], relevant, ranked,
 
 def run(conn, embedder: Embedder, scorer: Scorer | None = None, *, configs: list[str] | None = None,
         strategy_names: list[str] | None = None, query_set: Path = QUERY_SET, limit: int | None = None,
-        out: Path = RUNS) -> Path:
-    """One Evaluation run. Returns its folder."""
+        out: Path = RUNS, arm: str | None = None, arm_scorer: Scorer | None = None) -> Path:
+    """One Evaluation run, or with `arm` an Ablation run (the arm's configs, as default and as arm). Returns its folder.
+
+    An arm that swaps the reranker needs `arm_scorer`, the arm's model loaded by the caller.
+    """
+    arm_def = {"key": arm, **ARMS[arm]} if arm else None
+    if arm_def:
+        if configs:
+            raise ValueError("an Ablation run takes its configs from the arm; don't pass configs too")
+        configs = list(arm_def["configs"])
+        if "rerank_model" in arm_def["set"] and arm_scorer is None:
+            raise ValueError(f"arm {arm!r} swaps the reranker and needs an arm_scorer")
     configs = configs or list(CONFIGS)
     reranks = any_stage(configs, "rerank")
     if reranks and scorer is None:
@@ -233,8 +344,9 @@ def run(conn, embedder: Embedder, scorer: Scorer | None = None, *, configs: list
     relevant = {q["query_id"]: q["recipe_id"] for q in queries}
 
     started = datetime.now()
-    ranked, timings = search_all(conn, queries, strategy_names, configs, embedder, scorer)
-    rows = summarize(relevant, ranked, timings)
+    ranked, timings, kinds = search_all(conn, queries, strategy_names, configs, embedder, scorer, arm_def,
+                                        arm_scorer)
+    rows = [row for v in ranked for row in summarize(relevant, ranked[v], timings[v], v)]
 
     settings = {
         "started_at": started.isoformat(timespec="seconds"),
@@ -254,16 +366,22 @@ def run(conn, embedder: Embedder, scorer: Scorer | None = None, *, configs: list
         "embed_model": config.EMBED_MODEL,
         "rerank_model": config.RERANK_MODEL if reranks else None,
         "warmup_queries": 1,
+        "config_order": "rotated",
+        "arm": arm_def,
         **_db_settings(conn),
     }
     run_dir = out / started.strftime("%Y%m%d-%H%M%S")
-    write_run(run_dir, settings, rows, relevant, ranked, timings)
+    write_run(run_dir, settings, rows, relevant, ranked, timings, kinds)
+    write_recipes(conn, run_dir, ranked)
+    (run_dir / "corpus.json").write_text(json.dumps(corpus(conn, strategy_names, relevant), indent=2) + "\n")
     return run_dir
 
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--configs", nargs="+", choices=list(CONFIGS), help="default: all")
+    picks = p.add_mutually_exclusive_group()
+    picks.add_argument("--configs", nargs="+", choices=list(CONFIGS), help="default: all")
+    picks.add_argument("--arm", choices=list(ARMS), help="an Ablation run: the arm's configs, as default and as arm")
     p.add_argument("--strategies", nargs="+", help="default: every loaded Chunking strategy")
     p.add_argument("--queries", type=Path, default=QUERY_SET, help="Query set (JSONL)")
     p.add_argument("--limit", type=int, help="only the first N queries, for quick runs")
@@ -273,14 +391,17 @@ def parse_args(argv=None):
 
 if __name__ == "__main__":
     a = parse_args()
-    scorer = None
-    if any_stage(a.configs or CONFIGS, "rerank"):
+    scorer = arm_scorer = None
+    if any_stage(ARMS[a.arm]["configs"] if a.arm else a.configs or CONFIGS, "rerank"):
         from api.rerank import Reranker  # imports torch and loads the model, so only when Hybrid runs
         scorer = Reranker().score  # loaded once, before any timing
+        if a.arm and (model := ARMS[a.arm]["set"].get("rerank_model")):
+            arm_scorer = Reranker(model).score
     with psycopg.connect(config.DATABASE_URL, autocommit=True) as conn, httpx.Client(timeout=30) as http:
         try:
             run_dir = run(conn, lambda text: embed_query(http, text), scorer, configs=a.configs,
-                          strategy_names=a.strategies, query_set=a.queries.resolve(), limit=a.limit, out=a.out)
+                          strategy_names=a.strategies, query_set=a.queries.resolve(), limit=a.limit, out=a.out,
+                          arm=a.arm, arm_scorer=arm_scorer)
         except ValueError as e:
             sys.exit(f"evaluate: {e}")
     print((run_dir / "table.md").read_text())

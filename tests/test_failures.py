@@ -68,8 +68,8 @@ def test_rerank_hurt_is_hybrid_ranking_worse_than_the_fusion_baseline(run_dir):
 def test_counts_are_per_chunking_strategy(run_dir):
     counts = failures.analyze_run(run_dir)["counts"]
     assert counts == {
-        "fixed": {"queries": 4, "sparse_win": 2, "dense_win": 1, "rerank_hurt": 2},
-        "semantic": {"queries": 4, "sparse_win": 0, "dense_win": 0, "rerank_hurt": 0},
+        "fixed": {"queries": 4, "sparse_win": 2, "dense_win": 1, "rerank_hurt": 2, "rerank_help": 1},
+        "semantic": {"queries": 4, "sparse_win": 0, "dense_win": 0, "rerank_hurt": 0, "rerank_help": 0},
     }
 
 
@@ -90,15 +90,24 @@ def test_metrics_are_split_by_low_and_high_word_overlap(run_dir):
 
 def test_the_markdown_lists_the_first_n_cases_by_query_id(run_dir):
     md = failures.markdown(failures.analyze_run(run_dir), cases=1)
-    assert "| fixed | 4 | 2 | 1 | 2 |" in md
+    assert "| fixed | 4 | 2 | 1 | 2 | 1 |" in md
     assert "garlic butter prawns" in md and "Garlic Shrimp" in md
-    assert "crispy bread" not in md  # the 2nd Sparse win, past the first N
+    sparse_wins = md.split("## sparse_win")[1].split("## dense_win")[0]
+    assert "crispy bread" not in sparse_wins  # the 2nd Sparse win, past the first N
     assert "1 more, not listed" in md
 
 
 def test_the_command_writes_failures_md_into_the_run_folder(run_dir):
     out = failures.run(run_dir, cases=5)
     assert out == run_dir / "failures.md" and "stack of fluffy cakes" in out.read_text()
+
+
+def test_the_command_also_writes_failures_json_for_the_report_bundle(run_dir):
+    failures.run(run_dir)
+    data = json.loads((run_dir / "failures.json").read_text())
+    assert data["counts"]["fixed"]["rerank_help"] == 1 and data["rerank_net"]["fixed"]["net_into_top5"] == -1
+    row = next(r for r in data["overlap"] if (r["config"], r["strategy"], r["overlap"]) == ("sparse", "fixed", "high"))
+    assert row["queries"] == 2 and row["mrr"] == pytest.approx((1 / 3 + 1 / 10) / 2)  # q001 at 3, q003 at 10
 
 
 def test_a_run_without_fusion_and_hybrid_has_no_rerank_bucket(run_dir):
@@ -109,7 +118,8 @@ def test_a_run_without_fusion_and_hybrid_has_no_rerank_bucket(run_dir):
         w.writeheader()
         w.writerows(rows)
     report = failures.analyze_run(run_dir)
-    assert "rerank_hurt" not in report["counts"]["fixed"]
+    assert "rerank_hurt" not in report["counts"]["fixed"] and "rerank_help" not in report["counts"]["fixed"]
+    assert report["rerank_net"] == {}
     assert report["counts"]["fixed"]["sparse_win"] == 2
 
 
@@ -130,6 +140,55 @@ def test_only_the_queries_the_run_holds_are_analyzed(run_dir):
         w.writeheader()
         w.writerows(rows)
     report = failures.analyze_run(run_dir)
-    assert report["counts"]["fixed"] == {"queries": 2, "sparse_win": 1, "dense_win": 1, "rerank_hurt": 1}
+    assert report["counts"]["fixed"] == {"queries": 2, "sparse_win": 1, "dense_win": 1, "rerank_hurt": 1,
+                                         "rerank_help": 0}
     assert report["overlap"]["sparse", "fixed", "high"]["queries"] == 1  # q001 only, not q003
     assert report["overlap"]["sparse", "fixed", "high"]["mrr"] == pytest.approx(1 / 3)
+
+
+def test_an_ablation_run_is_analyzed_on_its_default_rows(run_dir):
+    rows = list(csv.DictReader(open(run_dir / "per_query.csv")))
+    with open(run_dir / "per_query.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, [*rows[0], "variant"])
+        w.writeheader()
+        for r in rows:
+            w.writerow({**r, "variant": "default"})
+            w.writerow({**r, "variant": "arm", "rank": 1})  # the arm finds everything first
+    counts = failures.analyze_run(run_dir)["counts"]["fixed"]
+    assert counts["sparse_win"] == 2 and counts["dense_win"] == 1  # as without the arm rows
+
+
+def test_rerank_help_is_hybrid_ranking_better_than_the_fusion_baseline(run_dir):
+    fixed = failures.analyze_run(run_dir)["buckets"]["fixed"]
+    assert ids(fixed["rerank_help"]) == ["q003"]  # a Fusion miss -> 20
+
+
+def test_the_net_effect_of_reranking_counts_moves_across_the_top_5_and_top_20(run_dir):
+    net = failures.analyze_run(run_dir)["rerank_net"]
+    assert net["fixed"] == {
+        "hurt": 2, "help": 1, "same": 1,
+        "hurt_left_top5": 1,  # q004: 1 -> miss. q001 (2 -> 4) stays in the top 5
+        "help_entered_top5": 0,  # q003 only reaches 20
+        "net_into_top5": -1,
+        "median_drop_when_hurt": 11,  # q001 drops 2, q004 drops 20 (a miss counts as 21)
+        "hurt_left_top20": 1, "help_from_outside_top20": 1,
+    }
+    assert net["semantic"]["same"] == 4 and net["semantic"]["median_drop_when_hurt"] is None
+
+
+def test_rerank_moves_are_split_by_the_chunk_kind_hybrid_ranked(run_dir):
+    kinds = {"q001": "step", "q002": "summary", "q003": "ingredients", "q004": ""}  # q004: a Hybrid miss
+    rows = list(csv.DictReader(open(run_dir / "per_query.csv")))
+    with open(run_dir / "per_query.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, [*rows[0], "best_kind"])
+        w.writeheader()
+        w.writerows({**r, "best_kind": kinds[r["query_id"]] if r["config"] == "hybrid" else "summary"}
+                    for r in rows)
+    fixed = failures.analyze_run(run_dir)["hybrid_kinds"]["fixed"]
+    assert fixed["rerank_hurt"] == {"step": 1, "miss": 1}
+    assert fixed["rerank_help"] == {"ingredients": 1}
+    assert fixed["all"] == {"step": 1, "summary": 1, "ingredients": 1, "miss": 1}
+
+
+def test_a_run_without_chunk_kinds_has_no_kind_split(run_dir):
+    assert failures.analyze_run(run_dir)["hybrid_kinds"] == {}

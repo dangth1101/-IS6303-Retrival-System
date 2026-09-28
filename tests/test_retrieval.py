@@ -1,8 +1,9 @@
 import pytest
 from pydantic import ValidationError
 
+from api import config
 from api.filters import SearchParams, where_clause
-from api.retrieval import Candidate, rerank, rrf, sparse
+from api.retrieval import Candidate, fused_candidates, rerank, rrf, sparse
 
 
 def cand(cid, score=0.0):
@@ -51,3 +52,31 @@ def test_sparse_breaks_score_ties_by_chunk_id_so_order_is_stable():
     conn = RecordingConn()
     sparse(conn, SearchParams(q="shrimp", strategy="semantic"), 10)
     assert "ORDER BY score DESC, id LIMIT" in " ".join(conn.sql.split())
+
+
+def test_rrf_uses_the_k_it_is_given():
+    fused = rrf([cand(1)], [cand(2)], k=10)
+    assert fused[0].rrf_score == pytest.approx(1 / 11)
+
+
+class CannedConn:
+    """Answers every Sparse and Dense query with the same 5 Chunks."""
+
+    def execute(self, sql, params):
+        return self
+
+    def fetchall(self):
+        return [(i, i, "step", 1, f"T\n{i}", 1.0) for i in range(1, 6)]
+
+
+def test_fused_candidates_cuts_to_the_rerank_top_it_is_given():
+    params = SearchParams(q="shrimp", strategy="semantic")
+    assert len(fused_candidates(CannedConn(), params, "[0]", rerank_top=2)) == 2
+
+
+def test_fused_candidates_defaults_to_the_served_settings(monkeypatch):
+    monkeypatch.setattr(config, "RERANK_TOP", 3)
+    monkeypatch.setattr(config, "RRF_K", 10)
+    fused = fused_candidates(CannedConn(), SearchParams(q="shrimp", strategy="semantic"), "[0]")
+    assert len(fused) == 3
+    assert fused[0].rrf_score == pytest.approx(2 / 11)  # rank 1 in both lists, k read at call time

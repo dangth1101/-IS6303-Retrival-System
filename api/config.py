@@ -11,4 +11,4 @@ DEFAULT_K = 5
 MAX_K = 50
 HYBRID_CANDIDATES = int(os.environ.get("HYBRID_CANDIDATES", 50))  # top N from each retriever
 RERANK_TOP = int(os.environ.get("RERANK_TOP", 50))  # fused candidates sent to the reranker
-RRF_K = 60
+RRF_K = int(os.environ.get("RRF_K", 60))

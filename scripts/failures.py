@@ -7,17 +7,20 @@ Buckets, per Chunking strategy:
     sparse_win   Sparse rank <= 10 and Dense rank > 10 (or not in the top 20)
     dense_win    the reverse
     rerank_hurt  Hybrid ranks the Recipe worse than the Fusion baseline (a Hybrid miss counts as worst)
+    rerank_help  the reverse: Hybrid ranks it better
 A bucket is left out when the run lacks one of its two configs.
 
 Also splits each config's metrics into high word overlap (every content word of the query is in the
 Recipe's text) and low overlap (the rest), to show how much the synthetic queries favour Sparse.
 
-Prints markdown and writes it to <run>/failures.md. Query text and Recipe titles come from the
-Query set named in the run's settings.json.
+Prints markdown and writes it to <run>/failures.md, and the same data to <run>/failures.json. Query text and
+Recipe titles come from the Query set named in the run's settings.json.
 """
 
 import argparse
 import csv
+import statistics
+from collections import Counter
 import hashlib
 import json
 import sys
@@ -49,7 +52,10 @@ BUCKETS = {
                         f"Dense found the Recipe in the top {FOUND_AT}, Sparse didn't"),
     "rerank_hurt": Bucket("fusion", "hybrid", lambda fusion, hybrid: hybrid > fusion,
                           "Reranking ranked the Recipe lower than the Fusion baseline"),
+    "rerank_help": Bucket("fusion", "hybrid", lambda fusion, hybrid: hybrid < fusion,
+                          "Reranking ranked the Recipe higher than the Fusion baseline"),
 }
+TOP = 5  # the net effect counts moves into and out of the top 5, the headline R@5
 
 
 def read_query_set(run_dir: Path, query_set: Path | None = None) -> dict[str, dict]:
@@ -64,18 +70,35 @@ def read_query_set(run_dir: Path, query_set: Path | None = None) -> dict[str, di
 
 
 def read_ranks(run_dir: Path) -> dict[metrics.Key, int | None]:
-    """(config, strategy, query id) -> the relevant Recipe's rank, or None if not in the top DEPTH."""
+    """(config, strategy, query id) -> the relevant Recipe's rank, or None if not in the top DEPTH.
+
+    An Ablation run's arm rows are skipped: the analysis is of the configs as served.
+    """
     with open(run_dir / "per_query.csv", newline="") as f:
         return {(r["config"], r["strategy"], r["query_id"]): int(r["rank"]) if r["rank"] else None
-                for r in csv.DictReader(f)}
+                for r in csv.DictReader(f) if r.get("variant", "default") == "default"}
 
 
 def in_bucket(bucket: Bucket, ranks: dict[str, int | None]) -> bool:
     return bucket.holds(ranks[bucket.first] or MISS, ranks[bucket.second] or MISS)
 
 
-def analyze(queries: dict[str, dict], ranks: dict[metrics.Key, int | None]) -> dict:
-    """Bucket members and counts per strategy, plus metrics split by word overlap. Pure.
+def read_kinds(run_dir: Path) -> dict[metrics.Key, str]:
+    """(config, strategy, query id) -> the Chunk kind that ranked the known Recipe ("" on a miss).
+
+    Empty for runs made before evaluate.py recorded best_kind.
+    """
+    with open(run_dir / "per_query.csv", newline="") as f:
+        return {(r["config"], r["strategy"], r["query_id"]): r["best_kind"] for r in csv.DictReader(f)
+                if "best_kind" in r and r.get("variant", "default") == "default"}
+
+
+def analyze(queries: dict[str, dict], ranks: dict[metrics.Key, int | None],
+            kinds: dict[metrics.Key, str] | None = None) -> dict:
+    """Bucket members and counts per strategy, metrics split by word overlap, and Reranking's net effect. Pure.
+
+    With `kinds`, the rerank buckets are also split by the Chunk kind Hybrid ranked the Recipe on, to test
+    whether Reranking goes wrong when it judges a Recipe by one Chunk.
 
     Covers the queries the run holds (a `--limit` run holds fewer than its Query set), in query id order.
     """
@@ -100,12 +123,39 @@ def analyze(queries: dict[str, dict], ranks: dict[metrics.Key, int | None]) -> d
               for g in ("high", "low")}
     overlap = {(c, s, g): metrics.average([metrics.query_scores(ranks.get((c, s, q))) for q in members])
                for c in configs for s in strategies for g, members in groups.items()}
+    net = ({s: rerank_net([(ranks.get(("fusion", s, q)) or MISS, ranks.get(("hybrid", s, q)) or MISS)
+                           for q in qids]) for s in strategies}
+           if {"fusion", "hybrid"} <= set(configs) else {})
+    hybrid_kinds = {}
+    if kinds and net:
+        kind = lambda s, q: kinds.get(("hybrid", s, q)) or "miss"  # noqa: E731
+        hybrid_kinds = {s: {"all": dict(Counter(kind(s, q) for q in qids)),
+                            **{b: dict(Counter(kind(s, c["query_id"]) for c in buckets[s][b]))
+                               for b in ("rerank_hurt", "rerank_help")}}
+                        for s in strategies}
     return {"configs": configs, "bucket_names": bucket_names, "buckets": buckets, "counts": counts,
-            "group_sizes": {g: len(members) for g, members in groups.items()}, "overlap": overlap}
+            "group_sizes": {g: len(members) for g, members in groups.items()}, "overlap": overlap,
+            "rerank_net": net, "hybrid_kinds": hybrid_kinds}
+
+
+def rerank_net(pairs: list[tuple[int, int]]) -> dict:
+    """What Reranking did overall, from (Fusion baseline rank, Hybrid rank) per query, a miss as MISS.
+
+    Hurts are many but small; helps are fewer but bigger. This is the table that shows it.
+    """
+    hurt = [(f, h) for f, h in pairs if h > f]
+    helped = [(f, h) for f, h in pairs if h < f]
+    drops = sorted(h - f for f, h in hurt)
+    left, entered = sum(f <= TOP < h for f, h in hurt), sum(h <= TOP < f for f, h in helped)
+    return {"hurt": len(hurt), "help": len(helped), "same": len(pairs) - len(hurt) - len(helped),
+            "hurt_left_top5": left, "help_entered_top5": entered, "net_into_top5": entered - left,
+            "median_drop_when_hurt": statistics.median(drops) if drops else None,
+            "hurt_left_top20": sum(h == MISS for _, h in hurt),
+            "help_from_outside_top20": sum(f == MISS for f, _ in helped)}
 
 
 def analyze_run(run_dir: Path, query_set: Path | None = None) -> dict:
-    return analyze(read_query_set(run_dir, query_set), read_ranks(run_dir))
+    return analyze(read_query_set(run_dir, query_set), read_ranks(run_dir), read_kinds(run_dir))
 
 
 def _rank(r: int | None) -> str:
@@ -148,10 +198,18 @@ def markdown(report: dict, cases: int = 10) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def as_json(report: dict) -> dict:
+    """The report with the overlap split as rows, since JSON keys can't be tuples."""
+    rows = [{"config": c, "strategy": s, "overlap": g, **r} for (c, s, g), r in report["overlap"].items()]
+    return {**report, "overlap": rows}
+
+
 def run(run_dir: Path, query_set: Path | None = None, cases: int = 10) -> Path:
-    """Analyze one Evaluation run and write <run>/failures.md. Returns its path."""
+    """Analyze one Evaluation run and write <run>/failures.md, plus failures.json for the report. Returns the .md."""
+    report = analyze_run(run_dir, query_set)
+    (run_dir / "failures.json").write_text(json.dumps(as_json(report), indent=2) + "\n")
     path = run_dir / "failures.md"
-    path.write_text(markdown(analyze_run(run_dir, query_set), cases))
+    path.write_text(markdown(report, cases))
     return path
 
 

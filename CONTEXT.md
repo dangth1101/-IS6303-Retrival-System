@@ -57,3 +57,15 @@ _Avoid_: Test set, qrels, benchmark
 **Evaluation run**:
 One scoring of the retrieval configs (Sparse, Dense, Fusion baseline, Hybrid) on the Query set under the chosen Chunking strategies, kept as one timestamped folder of settings, metrics and per-query ranks.
 _Avoid_: Benchmark, experiment
+
+**Report run**:
+The one Evaluation run whose numbers the report states, named explicitly rather than taken as the latest. Ablation runs are compared against it.
+_Avoid_: Main run, final run, latest run
+
+**Ablation run**:
+An Evaluation run that scores one arm (a single settings change) next to its default, on the same queries in the same run. Its default's ranks must match the Report run's; the arm is compared against that default.
+_Avoid_: Experiment, variant run
+
+**Timing repeat**:
+An Evaluation run that repeats the Report run's settings only to measure latency. Its ranks must match the Report run's; the report's latency is the median across Timing repeats.
+_Avoid_: Benchmark rerun

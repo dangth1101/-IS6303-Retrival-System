@@ -47,8 +47,9 @@ def dense(conn: psycopg.Connection, params, qvec: str, limit: int) -> list[Candi
     return _rows(conn, sql, [qvec, *wparams, qvec, limit])
 
 
-def rrf(sparse_hits: list[Candidate], dense_hits: list[Candidate], k: int = config.RRF_K) -> list[Candidate]:
-    """Reciprocal Rank Fusion: score = sum over lists of 1 / (k + rank), rank starting at 1."""
+def rrf(sparse_hits: list[Candidate], dense_hits: list[Candidate], k: int | None = None) -> list[Candidate]:
+    """Reciprocal Rank Fusion: score = sum over lists of 1 / (k + rank), rank starting at 1. k defaults to RRF_K."""
+    k = config.RRF_K if k is None else k
     fused: dict[int, Candidate] = {}
     for hits, field in ((sparse_hits, "sparse_rank"), (dense_hits, "dense_rank")):
         for rank, c in enumerate(hits, 1):
@@ -73,18 +74,24 @@ def untimed(stage: str):
     return nullcontext()
 
 
-def fused_candidates(conn: psycopg.Connection, params, qvec: str, watch=untimed) -> list[Candidate]:
-    """The RRF-merged Chunks Hybrid sends to the reranker. `watch(stage)` times each stage (the eval uses it)."""
+def fused_candidates(conn: psycopg.Connection, params, qvec: str, watch=untimed, *,
+                     rrf_k: int | None = None, rerank_top: int | None = None) -> list[Candidate]:
+    """The RRF-merged Chunks Hybrid sends to the reranker. `watch(stage)` times each stage (the eval uses it).
+
+    rrf_k and rerank_top default to the served settings; the eval's Ablation runs pass other values.
+    """
     n = config.HYBRID_CANDIDATES
+    rerank_top = config.RERANK_TOP if rerank_top is None else rerank_top
     with watch("sparse"):
         sparse_hits = sparse(conn, params, n)
     with watch("dense"):
         dense_hits = dense(conn, params, qvec, n)
     with watch("rrf"):
-        return rrf(sparse_hits, dense_hits)[:config.RERANK_TOP]
+        return rrf(sparse_hits, dense_hits, rrf_k)[:rerank_top]
 
 
-def hybrid(conn: psycopg.Connection, params, qvec: str, scorer, watch=untimed) -> list[Candidate]:
-    fused = fused_candidates(conn, params, qvec, watch)
+def hybrid(conn: psycopg.Connection, params, qvec: str, scorer, watch=untimed, *,
+           rrf_k: int | None = None, rerank_top: int | None = None) -> list[Candidate]:
+    fused = fused_candidates(conn, params, qvec, watch, rrf_k=rrf_k, rerank_top=rerank_top)
     with watch("rerank"):
         return rerank(params.q, fused, scorer)[:params.k]

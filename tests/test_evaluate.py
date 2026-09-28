@@ -59,7 +59,7 @@ def test_an_evaluation_run_writes_its_folder_and_ranks_the_known_item_first(load
     run_dir = evaluate.run(loaded_db, embedder, scorer, query_set=query_set, out=tmp_path / "runs")
 
     assert {p.name for p in run_dir.iterdir()} == {
-        "settings.json", "metrics.json", "metrics.csv", "per_query.csv", "table.md"}
+        "settings.json", "metrics.json", "metrics.csv", "per_query.csv", "table.md", "recipes.csv", "corpus.json"}
     assert calls == ["garlic shrimp", "garlic shrimp", "steeped tea"]  # warm-up, then one per query
     assert scored == calls  # Hybrid reranks once per query, the warm-up included
 
@@ -121,3 +121,90 @@ def test_the_command_defaults_to_every_config_and_loaded_strategy():
     assert a.queries == evaluate.QUERY_SET
     with pytest.raises(SystemExit):
         evaluate.parse_args(["--configs", "bm25"])
+
+
+def test_config_order_rotates_so_each_pair_goes_first_once_per_cycle():
+    pairs = [("sparse", "default"), ("dense", "default"), ("hybrid", "default")]
+    assert evaluate.rotated(pairs, 0) == pairs
+    assert evaluate.rotated(pairs, 1) == [("dense", "default"), ("hybrid", "default"), ("sparse", "default")]
+    assert [evaluate.rotated(pairs, i)[0] for i in range(3, 6)] == pairs  # the cycle repeats
+
+
+def test_an_ablation_run_writes_the_arm_beside_its_default(loaded_db, query_set, tmp_path, monkeypatch):
+    monkeypatch.setitem(evaluate.ARMS, "rerank-top-1", {"configs": ["hybrid"], "set": {"rerank_top": 1}})
+    run_dir = evaluate.run(loaded_db, lambda text: summary_embedding(loaded_db, 1), toast_first,
+                           arm="rerank-top-1", query_set=query_set, out=tmp_path)
+
+    ranks = {(r["config"], r["variant"], r["query_id"]): r["rank"] for r in read_csv(run_dir / "per_query.csv")}
+    assert set(ranks) == {("hybrid", v, q) for v in ("default", "arm") for q in ("q001", "q002")}
+    assert ranks["hybrid", "default", "q001"] == "2"  # Reranking puts Toast on top
+    assert ranks["hybrid", "arm", "q001"] == "1"  # the cut to 1 keeps Toast out
+
+    settings = json.loads((run_dir / "settings.json").read_text())
+    assert settings["configs"] == ["hybrid"]
+    assert settings["arm"] == {"key": "rerank-top-1", "configs": ["hybrid"], "set": {"rerank_top": 1}}
+    rows = json.loads((run_dir / "metrics.json").read_text())
+    assert {(r["config"], r["variant"]) for r in rows} == {("hybrid", "default"), ("hybrid", "arm")}
+    assert {r["variant"] for r in read_csv(run_dir / "metrics.csv")} == {"default", "arm"}
+
+
+def test_a_reranker_arm_reranks_with_the_arm_scorer(loaded_db, query_set, tmp_path, monkeypatch):
+    embed = lambda text: summary_embedding(loaded_db, 1)  # noqa: E731
+    with pytest.raises(ValueError, match="arm_scorer"):
+        evaluate.run(loaded_db, embed, toast_first, arm="reranker-minilm-l6", query_set=query_set, out=tmp_path)
+
+    run_dir = evaluate.run(loaded_db, embed, toast_first, arm="reranker-minilm-l6",
+                           arm_scorer=lambda query, texts: [0.0] * len(texts), query_set=query_set, out=tmp_path)
+    ranks = {(r["variant"], r["query_id"]): r["rank"] for r in read_csv(run_dir / "per_query.csv")}
+    assert ranks["default", "q001"] == "2"  # toast_first
+    assert ranks["arm", "q001"] == "1"  # all ties: the fused order stands
+
+
+def test_the_exact_dense_arm_runs_its_three_configs_and_restores_the_probe(loaded_db, query_set, tmp_path):
+    run_dir = evaluate.run(loaded_db, lambda text: summary_embedding(loaded_db, 1), toast_first,
+                           arm="exact-dense", query_set=query_set, out=tmp_path)
+    rows = read_csv(run_dir / "per_query.csv")
+    assert {(r["config"], r["variant"]) for r in rows} == {
+        (c, v) for c in ("dense", "fusion", "hybrid") for v in ("default", "arm")}
+    assert loaded_db.execute("SHOW paradedb.vector_cluster_max_probe").fetchone()[0] == "0.02"
+
+
+def test_an_ablation_run_takes_its_configs_from_the_arm(loaded_db, query_set, tmp_path):
+    with pytest.raises(ValueError, match="configs"):
+        evaluate.run(loaded_db, lambda text: "", toast_first, configs=["sparse"], arm="rrf-k-10",
+                     query_set=query_set, out=tmp_path)
+
+
+def test_a_run_records_the_winning_chunk_kind_and_the_titles_it_ranked(loaded_db, query_set, tmp_path):
+    run_dir = evaluate.run(loaded_db, lambda text: summary_embedding(loaded_db, 1), toast_first,
+                           configs=["sparse", "dense"], query_set=query_set, out=tmp_path)
+    rows = {(r["config"], r["query_id"]): r for r in read_csv(run_dir / "per_query.csv")}
+    assert {r["variant"] for r in rows.values()} == {"default"}
+    assert rows["dense", "q001"]["best_kind"] == "summary"  # the query vector is Garlic Shrimp's Summary
+
+    titles = {(r["recipe_id"], r["url"], r["title"]) for r in read_csv(run_dir / "recipes.csv")}
+    assert titles == {("1", "u0", "Garlic Shrimp"), ("2", "u1", "Toast"), ("3", "u2", "Tea")}
+
+
+def test_a_run_describes_the_corpus_it_searched(loaded_db, query_set, tmp_path):
+    run_dir = evaluate.run(loaded_db, lambda text: "", configs=["sparse"], query_set=query_set, out=tmp_path)
+    corpus = json.loads((run_dir / "corpus.json").read_text())
+
+    assert corpus["recipes"] == 3 and corpus["categories"] == 1
+    sentence = corpus["strategies"]["sentence"]
+    assert sentence["parameters"] == {"sentences": 3}
+    assert sentence["chunks"]["summary"] == sentence["chunks"]["ingredients"] == 3  # one each per Recipe
+    # Step text without the title line. Tea's 3 sentences are one Step; Toast's is the shortest.
+    assert sentence["step_chars"]["max"] == len("Boil water. Steep 1/2 hour. Pour.")  # ingest spells out ½
+    assert sentence["step_chars"]["min"] == len("Toast the bread.")
+    assert sum(sentence["step_chars"]["bins"].values()) == sentence["chunks"]["step"]
+    assert corpus["query_recipe_categories"] == {"1": "Main", "3": "Main"}
+
+
+def test_the_command_runs_one_named_arm_and_no_hand_picked_configs():
+    assert evaluate.parse_args([]).arm is None
+    assert evaluate.parse_args(["--arm", "rrf-k-10"]).arm == "rrf-k-10"
+    with pytest.raises(SystemExit):
+        evaluate.parse_args(["--arm", "rrf-k-7"])
+    with pytest.raises(SystemExit):
+        evaluate.parse_args(["--arm", "rrf-k-10", "--configs", "fusion"])
