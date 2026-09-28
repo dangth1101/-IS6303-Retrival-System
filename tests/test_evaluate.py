@@ -69,6 +69,7 @@ def test_an_evaluation_run_writes_its_folder_and_ranks_the_known_item_first(load
     assert settings["queries"] == 2 and len(settings["query_set_sha256"]) == 64
     assert settings["hybrid_candidates"] == config.HYBRID_CANDIDATES
     assert settings["rerank_top"] == config.RERANK_TOP and settings["rerank_model"] == config.RERANK_MODEL
+    assert settings["pg_search_version"] and settings["vector_cluster_max_probe"] == 0.02
 
     ranks = {(r["config"], r["query_id"]): r["rank"] for r in read_csv(run_dir / "per_query.csv")}
     assert set(ranks) == {(c, q) for c in ("sparse", "dense", "fusion", "hybrid") for q in ("q001", "q002")}

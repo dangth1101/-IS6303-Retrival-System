@@ -179,6 +179,13 @@ def _git_commit() -> str | None:
     return r.stdout.strip() or None
 
 
+def _db_settings(conn) -> dict:
+    """What the database contributes to a result: the pg_search build and the Dense ANN probe."""
+    version = conn.execute("SELECT extversion FROM pg_extension WHERE extname = 'pg_search'").fetchone()
+    probe = conn.execute("SHOW paradedb.vector_cluster_max_probe").fetchone()
+    return {"pg_search_version": version[0] if version else None, "vector_cluster_max_probe": float(probe[0])}
+
+
 def write_run(run_dir: Path, settings: dict, rows: list[dict], relevant, ranked, timings) -> None:
     run_dir.mkdir(parents=True)
     (run_dir / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
@@ -247,6 +254,7 @@ def run(conn, embedder: Embedder, scorer: Scorer | None = None, *, configs: list
         "embed_model": config.EMBED_MODEL,
         "rerank_model": config.RERANK_MODEL if reranks else None,
         "warmup_queries": 1,
+        **_db_settings(conn),
     }
     run_dir = out / started.strftime("%Y%m%d-%H%M%S")
     write_run(run_dir, settings, rows, relevant, ranked, timings)

@@ -2,7 +2,7 @@ name: is603  # the live data is in volume is603_recipe-pgdata; the folder name w
 
 services:
   paradedb:
-    image: paradedb/paradedb:pg17
+    image: paradedb/paradedb@sha256:8da5d202fe31875af32a49e802ce17cfbc146b0672306f4109809efee1e6f916  # pg17, pg_search 0.25.9
     container_name: recipe-paradedb
     environment:
       POSTGRES_USER: recipe
