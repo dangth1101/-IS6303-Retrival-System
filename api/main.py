@@ -104,6 +104,18 @@ def ui():
     return FileResponse(STATIC / "index.html")
 
 
+@app.get("/report", include_in_schema=False)
+def report():
+    """The Report page: the same app, which switches on the path and reads /report.json."""
+    return FileResponse(STATIC / "index.html")
+
+
+@app.get("/report.json", include_in_schema=False)
+def report_bundle():
+    """The report bundle, copied from ui/public by `npm run build`."""
+    return FileResponse(STATIC / "report.json")
+
+
 @app.get("/search/sparse", response_model=SearchResponse, response_model_exclude_none=True)
 def search_sparse(params: Params, conn=Depends(get_conn)):
     """Sparse retrieval: BM25 over Chunk text."""

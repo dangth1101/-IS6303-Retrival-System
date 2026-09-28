@@ -13,10 +13,12 @@
     "rrf-k-100": "eval/runs/20260928-173839",
     "rerank-top-20": "eval/runs/20260928-173927",
     "rerank-top-100": "eval/runs/20260928-181242",
-    "exact-dense": "eval/runs/20260928-190954"
+    "exact-dense": "eval/runs/20260928-190954",
+    "hnsw-dense": "eval/runs/20260929-012200"
   },
   "labels": {
     "query_edits": "eval/query_edits.csv",
-    "error_groups": "eval/error_groups.csv"
+    "error_groups": "eval/error_groups.csv",
+    "cases": "eval/cases.csv"
   }
 }

@@ -13,6 +13,7 @@
   --color-sparse: var(--sparse);
   --color-dense: var(--dense);
   --color-hybrid: var(--hybrid);
+  --color-fusion: var(--fusion);
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-danger: var(--danger);
@@ -28,6 +29,7 @@
   --sparse: #2f6bd6;
   --dense: #0e8f80;
   --hybrid: #6a4fd6;
+  --fusion: #c2571a;  /* Fusion baseline, Report page only; validated next to the other three */
   --ok: #1f8a4c;
   --warn: #c98a00;
   --danger: #c0352b;
@@ -44,6 +46,7 @@
   --sparse: #74a3f2;
   --dense: #3fc3b1;
   --hybrid: #a28ff5;
+  --fusion: #ec8a4f;
   --ok: #4cc27f;
   --warn: #e7b43c;
   --danger: #f0776c;
