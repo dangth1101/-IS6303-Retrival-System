@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -35,7 +35,7 @@ import psycopg  # noqa: E402
 import metrics  # noqa: E402
 from api import config, retrieval, strategies  # noqa: E402
 from api.embed import embed_query  # noqa: E402
-from api.filters import SearchParams  # noqa: E402
+from api.filters import SearchParams, where_clause  # noqa: E402
 
 QUERY_SET = ROOT / "eval" / "queries.jsonl"
 RUNS = ROOT / "eval" / "runs"
@@ -62,6 +62,7 @@ class SearchInput:
     scorer: Scorer | None  # the reranker, if Hybrid runs
     rrf_k: int | None = None  # None: the served setting
     rerank_top: int | None = None
+    dense_search: Callable | None = None  # None: the served Dense SQL
 
 
 # A config's search takes a SearchInput, times its own stages, and returns ranked Chunks.
@@ -73,15 +74,17 @@ def sparse(conn, q: SearchInput, watch):
 
 def dense(conn, q: SearchInput, watch):
     with watch("dense"):
-        return retrieval.dense(conn, q.params, q.qvec, POOL)
+        return (q.dense_search or retrieval.dense)(conn, q.params, q.qvec, POOL)
 
 
 def fusion(conn, q: SearchInput, watch):
-    return retrieval.fused_candidates(conn, q.params, q.qvec, watch, rrf_k=q.rrf_k, rerank_top=q.rerank_top)
+    return retrieval.fused_candidates(conn, q.params, q.qvec, watch, rrf_k=q.rrf_k, rerank_top=q.rerank_top,
+                                      dense_search=q.dense_search)
 
 
 def hybrid(conn, q: SearchInput, watch):
-    return retrieval.hybrid(conn, q.params, q.qvec, q.scorer, watch, rrf_k=q.rrf_k, rerank_top=q.rerank_top)
+    return retrieval.hybrid(conn, q.params, q.qvec, q.scorer, watch, rrf_k=q.rrf_k, rerank_top=q.rerank_top,
+                            dense_search=q.dense_search)
 
 
 @dataclass(frozen=True)
@@ -99,7 +102,8 @@ CONFIGS = {
 STAGES = list(dict.fromkeys(st for c in CONFIGS.values() for st in c.stages))  # CSV column order
 
 # Ablation run arms: each runs its configs twice per query, as "default" and as "arm" with these settings.
-# rerank_model: the arm's reranker, loaded by the command; probe: paradedb.vector_cluster_max_probe for Dense.
+# rerank_model: the arm's reranker, loaded by the command; probe: paradedb.vector_cluster_max_probe for Dense;
+# dense_index: "hnsw" searches a pgvector HNSW index (sql/ablation/hnsw.sql) at hnsw.ef_search = ef_search.
 ARMS = {
     "reranker-minilm-l6": {"configs": ["hybrid"], "set": {"rerank_model": "cross-encoder/ms-marco-MiniLM-L6-v2"}},
     "reranker-mxbai-base": {"configs": ["hybrid"], "set": {"rerank_model": "mixedbread-ai/mxbai-rerank-base-v1"}},
@@ -109,8 +113,51 @@ ARMS = {
     "rerank-top-20": {"configs": ["hybrid"], "set": {"rerank_top": 20}},
     "rerank-top-100": {"configs": ["hybrid"], "set": {"rerank_top": 100}},
     "exact-dense": {"configs": ["dense", "fusion", "hybrid"], "set": {"probe": 1.0}},
+    "hnsw-dense": {"configs": ["dense", "fusion", "hybrid"], "set": {"dense_index": "hnsw", "ef_search": 200}},
 }
 PROBE = "paradedb.vector_cluster_max_probe"
+
+# The served Dense SQL without `id @@@ pdb.all()`, which is what routes it through the ParadeDB index.
+HNSW_DENSE_SQL = """SELECT {columns}, 1 - (embedding <=> %s::vector) AS score
+                    FROM chunk WHERE {where}
+                    ORDER BY embedding <=> %s::vector LIMIT %s"""
+
+
+def hnsw_dense(conn, params, qvec: str, limit: int) -> list[retrieval.Candidate]:
+    """Dense retrieval for the hnsw-dense arm: same ranking as the served SQL, planned onto the HNSW index."""
+    where, wparams = where_clause(params)
+    sql = HNSW_DENSE_SQL.format(columns=retrieval.COLUMNS, where=where)
+    return retrieval._rows(conn, sql, [qvec, *wparams, qvec, limit])
+
+
+DENSE_SEARCH = {"hnsw": hnsw_dense}
+
+
+def hnsw_indexes(conn, strategy_names: list[str]) -> list[dict]:
+    """The HNSW index each strategy's partition is searched through, checked with EXPLAIN before any timing.
+
+    Raises ValueError if a partition has no HNSW index or the planner doesn't pick it, so the arm never
+    silently measures a sequential scan.
+    """
+    out = []
+    for name in strategy_names:
+        partition = f"chunk_{name}"
+        indexes = conn.execute(
+            """SELECT c.relname, pg_relation_size(c.oid), c.reloptions FROM pg_index i
+               JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am am ON am.oid = c.relam
+               WHERE i.indrelid = %s::regclass AND am.amname = 'hnsw'""", [partition]).fetchall()
+        qvec = conn.execute(f'SELECT embedding::text FROM "{partition}" LIMIT 1').fetchone()[0]
+        where, wparams = where_clause(SearchParams(q="plan check", strategy=name, k=config.MAX_K))
+        sql = HNSW_DENSE_SQL.format(columns=retrieval.COLUMNS, where=where)
+        plan = "\n".join(r[0] for r in conn.execute("EXPLAIN " + sql, [qvec, *wparams, qvec, POOL]).fetchall())
+        used = [ix for ix in indexes if ix[0] in plan.split()]
+        if not used:
+            scans = "; ".join(line.strip() for line in plan.splitlines() if "Scan" in line)
+            raise ValueError(f"the HNSW Dense SQL doesn't use an HNSW index on {partition} (plan: {scans}); "
+                             f"build them with sql/ablation/hnsw.sql")
+        index, size, options = used[0]
+        out.append({"partition": partition, "index": index, "bytes": size, "options": options})
+    return out
 
 
 def any_stage(configs, stage: str) -> bool:
@@ -163,11 +210,16 @@ def search_all(conn, queries: list[dict], strategy_names: list[str], configs: li
             for c, v in rotated(pairs, i):
                 knobs = sets[v]
                 query = SearchInput(params, qvec, arm_scorer if "rerank_model" in knobs else scorer,
-                                    rrf_k=knobs.get("rrf_k"), rerank_top=knobs.get("rerank_top"))
+                                    rrf_k=knobs.get("rrf_k"), rerank_top=knobs.get("rerank_top"),
+                                    dense_search=DENSE_SEARCH.get(knobs.get("dense_index")))
                 if probes["arm"] is not None:  # outside the stopwatch, and paid by both variants alike
                     conn.execute("SELECT set_config(%s, %s, false)", [PROBE, str(probes[v])])
-                watch = Stopwatch()
-                hits = CONFIGS[c].search(conn, query, watch)
+                ef_search = knobs.get("ef_search")
+                with conn.transaction() if ef_search else nullcontext():  # SET LOCAL ends with the call
+                    if ef_search:
+                        conn.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)}")
+                    watch = Stopwatch()
+                    hits = CONFIGS[c].search(conn, query, watch)
                 if i == 0:
                     continue
                 if "embed" in CONFIGS[c].stages:
@@ -338,6 +390,8 @@ def run(conn, embedder: Embedder, scorer: Scorer | None = None, *, configs: list
     strategy_names = resolve_strategies(conn, strategy_names)
     if not strategy_names:
         raise ValueError("no Chunking strategy is loaded")
+    if arm_def and arm_def["set"].get("dense_index") == "hnsw":
+        arm_def["hnsw_indexes"] = hnsw_indexes(conn, strategy_names)
     queries = read_queries(query_set, limit)
     if not queries:
         raise ValueError(f"{query_set} has no queries")

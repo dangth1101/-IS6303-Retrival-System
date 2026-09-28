@@ -169,6 +169,37 @@ def test_the_exact_dense_arm_runs_its_three_configs_and_restores_the_probe(loade
     assert loaded_db.execute("SHOW paradedb.vector_cluster_max_probe").fetchone()[0] == "0.02"
 
 
+def test_the_hnsw_arm_refuses_to_run_without_an_hnsw_index(loaded_db, query_set, tmp_path):
+    with pytest.raises(ValueError, match="HNSW index on chunk_sentence"):
+        evaluate.run(loaded_db, lambda text: summary_embedding(loaded_db, 1), toast_first,
+                     arm="hnsw-dense", query_set=query_set, out=tmp_path)
+
+
+def test_the_hnsw_arm_searches_the_hnsw_index_and_leaves_the_default_ranks_alone(loaded_db, query_set, tmp_path):
+    embed = lambda text: summary_embedding(loaded_db, 1)  # noqa: E731
+    normal = evaluate.run(loaded_db, embed, toast_first, configs=["dense", "fusion", "hybrid"],
+                          query_set=query_set, out=tmp_path / "normal")
+    loaded_db.execute("CREATE INDEX chunk_sentence_embedding_hnsw ON chunk_sentence "
+                      "USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)")
+    for knob in ("enable_seqscan", "enable_sort"):  # 3 Recipes: the planner would otherwise skip the index
+        loaded_db.execute(f"SET {knob} = off")
+    try:
+        run_dir = evaluate.run(loaded_db, embed, toast_first, arm="hnsw-dense", query_set=query_set,
+                               out=tmp_path / "arm")
+    finally:
+        loaded_db.execute("RESET ALL")
+
+    ranks = lambda d, v: {(r["config"], r["query_id"]): r["rank"]  # noqa: E731
+                          for r in read_csv(d / "per_query.csv") if r["variant"] == v}
+    assert ranks(run_dir, "default") == ranks(normal, "default")
+    assert ranks(run_dir, "arm") == ranks(normal, "default")  # exact on 3 Recipes, so HNSW agrees
+    arm = json.loads((run_dir / "settings.json").read_text())["arm"]
+    assert arm["set"] == {"dense_index": "hnsw", "ef_search": 200}
+    assert [(ix["partition"], ix["index"]) for ix in arm["hnsw_indexes"]] == [
+        ("chunk_sentence", "chunk_sentence_embedding_hnsw")]
+    assert arm["hnsw_indexes"][0]["bytes"] > 0
+
+
 def test_an_ablation_run_takes_its_configs_from_the_arm(loaded_db, query_set, tmp_path):
     with pytest.raises(ValueError, match="configs"):
         evaluate.run(loaded_db, lambda text: "", toast_first, configs=["sparse"], arm="rrf-k-10",

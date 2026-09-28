@@ -75,23 +75,26 @@ def untimed(stage: str):
 
 
 def fused_candidates(conn: psycopg.Connection, params, qvec: str, watch=untimed, *,
-                     rrf_k: int | None = None, rerank_top: int | None = None) -> list[Candidate]:
+                     rrf_k: int | None = None, rerank_top: int | None = None,
+                     dense_search=None) -> list[Candidate]:
     """The RRF-merged Chunks Hybrid sends to the reranker. `watch(stage)` times each stage (the eval uses it).
 
-    rrf_k and rerank_top default to the served settings; the eval's Ablation runs pass other values.
+    rrf_k, rerank_top and dense_search (Dense retrieval, same signature as `dense`) default to the served
+    settings; the eval's Ablation runs pass other values.
     """
     n = config.HYBRID_CANDIDATES
     rerank_top = config.RERANK_TOP if rerank_top is None else rerank_top
     with watch("sparse"):
         sparse_hits = sparse(conn, params, n)
     with watch("dense"):
-        dense_hits = dense(conn, params, qvec, n)
+        dense_hits = (dense_search or dense)(conn, params, qvec, n)
     with watch("rrf"):
         return rrf(sparse_hits, dense_hits, rrf_k)[:rerank_top]
 
 
 def hybrid(conn: psycopg.Connection, params, qvec: str, scorer, watch=untimed, *,
-           rrf_k: int | None = None, rerank_top: int | None = None) -> list[Candidate]:
-    fused = fused_candidates(conn, params, qvec, watch, rrf_k=rrf_k, rerank_top=rerank_top)
+           rrf_k: int | None = None, rerank_top: int | None = None, dense_search=None) -> list[Candidate]:
+    fused = fused_candidates(conn, params, qvec, watch, rrf_k=rrf_k, rerank_top=rerank_top,
+                             dense_search=dense_search)
     with watch("rerank"):
         return rerank(params.q, fused, scorer)[:params.k]
