@@ -1,8 +1,42 @@
 # Recipe Retrieval
 
-Sparse (BM25), Dense (embedding) and Hybrid (RRF + Reranking) retrieval over the [Shengtao/recipe](https://huggingface.co/datasets/Shengtao/recipe) dataset, stored in ParadeDB under three Chunking strategies (`fixed`, `sentence`, `semantic`). An evaluation scores four configs on a fixed Query set with Recall@k, MRR, nDCG@k and latency.
+Sparse (BM25), Dense (embedding) and Hybrid (RRF + Reranking) retrieval over the [Shengtao/recipe](https://huggingface.co/datasets/Shengtao/recipe) dataset, stored in ParadeDB under three Chunking strategies (`fixed`, `sentence`, `semantic`). An evaluation scores four configs on a fixed Query set with Recall@k, MRR, nDCG@k and latency. Text only: images in the dataset aren't used.
 
-Terms like Chunk, Chunking strategy and Fusion baseline are defined in [CONTEXT.md](CONTEXT.md). Design decisions are in [docs/adr/](docs/adr/).
+The write-up is the Report page at `/report` (see [Report](#report)). The headline numbers are in [Results](#results).
+
+Terms like Chunk, Chunking strategy and Fusion baseline are defined in [CONTEXT.md](CONTEXT.md). Design decisions are in [docs/adr/](docs/adr/). Dense search uses ParadeDB's own vector index rather than pgvector HNSW, so one index per partition serves BM25, vectors and Filters; [ADR 0003](docs/adr/0003-serve-dense-from-paradedb-index.md) explains why, and the report measures HNSW as an ablation.
+
+## Results
+
+Report run [`eval/runs/20260928-122309`](eval/runs/20260928-122309/table.md) on commit `466b46a`: 298 queries, four configs, three Chunking strategies. The full table with R@5/10/20, MRR, nDCG@5/10 and latency is [table.md](eval/runs/20260928-122309/table.md). Latency in the report comes from three Timing repeats rather than this single run.
+
+## Report
+
+The Report page reads one committed file, `ui/public/report.json`. It needs no database, Ollama or API:
+
+```sh
+cd ui && npm install && npm run dev     # open http://localhost:5173/report
+```
+
+Or build the UI and run the API (step 5 below), then open http://localhost:8000/report.
+
+To rebuild the bundle after changing a run or a label file (needs `data/recipe.csv`, which step 2 downloads):
+
+```sh
+uv run python scripts/report_bundle.py
+```
+
+It reads only what the manifest `eval/report.json` names and fails if any Timing repeat or Ablation run ranks a query differently from the Report run. A test fails when the committed bundle is older than its inputs.
+
+## Demo
+
+For a live demo, run the search page (step 5) and pick the `semantic` strategy. Three queries show the three stories from Section 6.4 of the report:
+
+| Query | What to point out |
+|---|---|
+| `creamy black bean and tomato stew` (q155) | Sparse misses Black Bean and Tomato Soup because the query says stew; Dense and Hybrid find it. |
+| `yellow split pea soup with curry powder` (q012) | Sparse ranks Vegan Split Pea Soup II first on the exact words; Dense loses it among other split pea soups. |
+| `greek yogurt with fruit and nuts frozen dessert` (q076) | Neither list alone ranks Yogurt Bark well, and Reranking puts it first. |
 
 ## Prerequisites
 
@@ -102,7 +136,22 @@ Runs every query through four configs under every loaded Chunking strategy:
 
 A full run (298 queries × 4 configs × 3 strategies) took about 11 minutes. Reranking is most of it.
 
-Each Evaluation run prints a markdown table and writes `eval/runs/<timestamp>/` with `settings.json`, `metrics.json`, `metrics.csv`, `per_query.csv` (ranks and latencies per query) and `table.md`.
+Each Evaluation run prints a markdown table and writes `eval/runs/<timestamp>/` with `settings.json`, `metrics.json`, `metrics.csv`, `per_query.csv` (ranks, latencies and the winning Chunk kind per query), `table.md`, `recipes.csv` (titles of every ranked Recipe and every query's known Recipe) and `corpus.json` (what was searched).
+
+An Ablation run changes one setting against its default in the same run. The arms are named in `ARMS` in `scripts/evaluate.py`:
+
+```sh
+uv run scripts/evaluate.py --arm reranker-mxbai-base
+```
+
+The `hnsw-dense` arm needs its indexes first, and they are dropped after:
+
+```sh
+docker exec -i recipe-paradedb psql -U recipe -d recipe -v ON_ERROR_STOP=1 < sql/ablation/hnsw.sql
+uv run scripts/evaluate.py --arm hnsw-dense
+uv run scripts/runcheck.py eval/runs/20260928-122309 eval/runs/<the new run>
+docker exec -i recipe-paradedb psql -U recipe -d recipe < sql/ablation/hnsw-drop.sql
+```
 
 For a quick check:
 
@@ -118,17 +167,30 @@ uv run scripts/failures.py eval/runs/<timestamp>
 
 Reads the run folder, doesn't search again. It prints and writes `failures.md` with:
 
-- counts per strategy of `sparse_win` (Sparse top 10, Dense not), `dense_win` (the reverse) and `rerank_hurt` (Hybrid ranks the Recipe worse than the Fusion baseline)
+- counts per strategy of `sparse_win` (Sparse top 10, Dense not), `dense_win` (the reverse), `rerank_hurt` (Hybrid ranks the Recipe worse than the Fusion baseline) and `rerank_help` (better), plus Reranking's net effect on the top 5
 - the first N cases of each bucket with query, Recipe title and ranks (`--cases N`, default 10)
 - each config's metrics split into high and low word overlap between query and Recipe
+
+It also writes `failures.json`, which the report bundle reads.
+
+## 8. Significance and the rank check
+
+```sh
+uv run scripts/significance.py eval/runs/<timestamp>   # paired bootstrap, writes significance.json
+uv run scripts/runcheck.py eval/runs/20260928-122309 eval/runs/<timestamp>   # ranks must match the Report run
+```
+
+`significance.py` stores raw p only; the report bundle applies Holm across every run the manifest names.
 
 Run folders are gitignored. Keep one for the report with `git add -f eval/runs/<timestamp>`.
 
 ## Tests
 
 ```sh
-uv run pytest
+uv run python -m pytest
 ```
+
+(`uv run pytest` fails when the project path contains a space, because the venv's script shebang breaks.)
 
 Tests that need the database build a throwaway `recipe_test` DB inside the `recipe-paradedb` container and are skipped when it isn't running. They use fake embedders and scorers, so Ollama isn't needed.
 
@@ -136,10 +198,10 @@ Tests that need the database build a throwaway `recipe_test` DB inside the `reci
 
 ```
 api/            FastAPI app: retrieval, filters, reranking, config
-ui/             React + Tailwind search page, built into api/static
-scripts/        ingest, search, make_queries, evaluate, failures, metrics
-sql/            schema, BM25 + vector indexes, one-off migrations
-eval/           the Query set; runs/ holds Evaluation runs (gitignored)
+ui/             React + Tailwind search page and the Report page (/report), built into api/static
+scripts/        ingest, search, make_queries, evaluate, failures, metrics, significance, runcheck, report_bundle
+sql/            schema, BM25 + vector indexes, one-off migrations; ablation/ holds the HNSW DDL
+eval/           the Query set, label files, the report manifest report.json; runs/ holds Evaluation runs (gitignored, report runs kept with -f)
 docs/adr/       architecture decisions
 tests/          pytest
 ```

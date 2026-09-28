@@ -9,3 +9,7 @@ node_modules/
 api/static/
 # Evaluation run folders; keep one for the report with `git add -f`
 eval/runs/
+# Local secrets, never committed
+.env
+.env.*
+!.env.example
