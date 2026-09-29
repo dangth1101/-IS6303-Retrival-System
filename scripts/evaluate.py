@@ -10,6 +10,9 @@ eval only) and hybrid (RRF + Reranking, as the API serves it). Both call the API
 Prints a markdown table and writes a run folder under eval/runs/<timestamp>/:
 settings.json, metrics.json, metrics.csv, per_query.csv (ranks, latencies, the winning Chunk kind), table.md,
 recipes.csv (titles of every ranked Recipe) and corpus.json (what was searched). Config order rotates per query.
+
+Scored against the pooled qrels (eval/qrels.csv): a rank is the first right Recipe's, where a query's right
+Recipes are the one it was written from plus any judged relevant. --qrels none scores the written-from Recipe only.
 Runs in the project env (not a PEP 723 script) because it calls the API's retrieval code.
 """
 
@@ -38,6 +41,7 @@ from api.embed import embed_query  # noqa: E402
 from api.filters import SearchParams, where_clause  # noqa: E402
 
 QUERY_SET = ROOT / "eval" / "queries.jsonl"
+QRELS = ROOT / "eval" / "qrels.csv"
 RUNS = ROOT / "eval" / "runs"
 POOL = 100  # Chunks Sparse and Dense pull before deduping to the top metrics.DEPTH Recipes
 
@@ -179,10 +183,11 @@ def read_queries(path: Path, limit: int | None = None) -> list[dict]:
 
 
 def search_all(conn, queries: list[dict], strategy_names: list[str], configs: list[str], embedder: Embedder,
-               scorer: Scorer | None, arm: dict | None = None, arm_scorer: Scorer | None = None):
+               scorer: Scorer | None, arm: dict | None = None, arm_scorer: Scorer | None = None,
+               right: dict[str, set[int]] | None = None):
     """Ranked Recipe ids, stage timings and best Chunk kind per variant, then per (config, strategy, query id).
 
-    The best Chunk kind is the kind of the known Recipe's top Chunk in the list, or "" if it isn't in the top.
+    The best Chunk kind is the kind of the first right Recipe's top Chunk in the list, or "" if none is in the top.
 
     Without an arm the only variant is "default". With one, each config also runs as "arm" with the arm's
     settings, interleaved with its default per query so both see the same machine state.
@@ -227,8 +232,9 @@ def search_all(conn, queries: list[dict], strategy_names: list[str], configs: li
                 key = (c, strategy, q["query_id"])
                 ranked[v][key] = metrics.dedupe(h.recipe_id for h in hits)
                 timings[v][key] = watch
-                found = metrics.rank_of(q["recipe_id"], ranked[v][key])
-                kinds[v][key] = next(h.kind for h in hits if h.recipe_id == q["recipe_id"]) if found else ""
+                wanted = right[q["query_id"]] if right else {q["recipe_id"]}
+                found = metrics.first_rank(wanted, ranked[v][key])
+                kinds[v][key] = next(h.kind for h in hits if h.recipe_id == ranked[v][key][found - 1]) if found else ""
     if probes["arm"] is not None:
         conn.execute("SELECT set_config(%s, %s, false)", [PROBE, str(probes["default"])])
     return ranked, timings, kinds
@@ -344,7 +350,10 @@ def write_recipes(conn, run_dir: Path, ranked: dict, relevant: dict[str, int]) -
         w.writerows(conn.execute("SELECT id, url, title FROM recipe WHERE id = ANY(%s) ORDER BY id", [ids]))
 
 
-def write_run(run_dir: Path, settings: dict, rows: list[dict], relevant, ranked, timings, kinds) -> None:
+def write_run(run_dir: Path, settings: dict, rows: list[dict], relevant, ranked, timings, kinds,
+              right: dict[str, set[int]] | None = None) -> None:
+    """`relevant` is the written-from Recipe per query; `right` every right Recipe (default: just that one)."""
+    right = right or {qid: {rid} for qid, rid in relevant.items()}
     run_dir.mkdir(parents=True)
     (run_dir / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
     (run_dir / "metrics.json").write_text(json.dumps(rows, indent=2) + "\n")
@@ -366,7 +375,7 @@ def write_run(run_dir: Path, settings: dict, rows: list[dict], relevant, ranked,
                     *(f"{st}_ms" for st in STAGES), "top_recipe_ids"])
         for v, (c, s, qid), top in sorted_rows(ranked):
             watch = timings[v][c, s, qid]
-            w.writerow([c, v, s, qid, relevant[qid], metrics.rank_of(relevant[qid], top) or "", kinds[v][c, s, qid],
+            w.writerow([c, v, s, qid, relevant[qid], metrics.first_rank(right[qid], top) or "", kinds[v][c, s, qid],
                         round(sum(watch.values()), 2),
                         *(round(watch[st], 2) if st in watch else "" for st in STAGES),
                         " ".join(map(str, top))])
@@ -376,10 +385,12 @@ def write_run(run_dir: Path, settings: dict, rows: list[dict], relevant, ranked,
 
 def run(conn, embedder: Embedder, scorer: Scorer | None = None, *, configs: list[str] | None = None,
         strategy_names: list[str] | None = None, query_set: Path = QUERY_SET, limit: int | None = None,
-        out: Path = RUNS, arm: str | None = None, arm_scorer: Scorer | None = None) -> Path:
+        out: Path = RUNS, arm: str | None = None, arm_scorer: Scorer | None = None,
+        qrels: Path | None = None) -> Path:
     """One Evaluation run, or with `arm` an Ablation run (the arm's configs, as default and as arm). Returns its folder.
 
-    An arm that swaps the reranker needs `arm_scorer`, the arm's model loaded by the caller.
+    An arm that swaps the reranker needs `arm_scorer`, the arm's model loaded by the caller. With `qrels`, each
+    query is scored on its first right Recipe; without, on the Recipe it was written from.
     """
     arm_def = {"key": arm, **ARMS[arm]} if arm else None
     if arm_def:
@@ -401,11 +412,13 @@ def run(conn, embedder: Embedder, scorer: Scorer | None = None, *, configs: list
     if not queries:
         raise ValueError(f"{query_set} has no queries")
     relevant = {q["query_id"]: q["recipe_id"] for q in queries}
+    judged = metrics.read_qrels(qrels) if qrels else {}
+    right = {qid: judged.get(qid, set()) | {rid} for qid, rid in relevant.items()}
 
     started = datetime.now()
     ranked, timings, kinds = search_all(conn, queries, strategy_names, configs, embedder, scorer, arm_def,
-                                        arm_scorer)
-    rows = [row for v in ranked for row in summarize(relevant, ranked[v], timings[v], v)]
+                                        arm_scorer, right)
+    rows = [row for v in ranked for row in summarize(right, ranked[v], timings[v], v)]
 
     settings = {
         "started_at": started.isoformat(timespec="seconds"),
@@ -415,6 +428,8 @@ def run(conn, embedder: Embedder, scorer: Scorer | None = None, *, configs: list
         "strategies": strategy_names,
         "query_set": str(query_set.relative_to(ROOT) if query_set.is_relative_to(ROOT) else query_set),
         "query_set_sha256": hashlib.sha256(query_set.read_bytes()).hexdigest(),
+        "qrels": str(qrels.relative_to(ROOT) if qrels.is_relative_to(ROOT) else qrels) if qrels else None,
+        "qrels_sha256": hashlib.sha256(qrels.read_bytes()).hexdigest() if qrels else None,
         "queries": len(queries),
         "limit": limit,
         "chunk_pool": POOL,
@@ -430,7 +445,7 @@ def run(conn, embedder: Embedder, scorer: Scorer | None = None, *, configs: list
         **_db_settings(conn),
     }
     run_dir = out / started.strftime("%Y%m%d-%H%M%S")
-    write_run(run_dir, settings, rows, relevant, ranked, timings, kinds)
+    write_run(run_dir, settings, rows, relevant, ranked, timings, kinds, right)
     write_recipes(conn, run_dir, ranked, relevant)
     (run_dir / "corpus.json").write_text(json.dumps(corpus(conn, strategy_names, relevant), indent=2) + "\n")
     return run_dir
@@ -443,6 +458,7 @@ def parse_args(argv=None):
     picks.add_argument("--arm", choices=list(ARMS), help="an Ablation run: the arm's configs, as default and as arm")
     p.add_argument("--strategies", nargs="+", help="default: every loaded Chunking strategy")
     p.add_argument("--queries", type=Path, default=QUERY_SET, help="Query set (JSONL)")
+    p.add_argument("--qrels", default=str(QRELS), help="pooled qrels CSV, or 'none' for the written-from Recipe only")
     p.add_argument("--limit", type=int, help="only the first N queries, for quick runs")
     p.add_argument("--out", type=Path, default=RUNS, help="parent folder for the run folder")
     return p.parse_args(argv)
@@ -460,7 +476,8 @@ if __name__ == "__main__":
         try:
             run_dir = run(conn, lambda text: embed_query(http, text), scorer, configs=a.configs,
                           strategy_names=a.strategies, query_set=a.queries.resolve(), limit=a.limit, out=a.out,
-                          arm=a.arm, arm_scorer=arm_scorer)
+                          arm=a.arm, arm_scorer=arm_scorer,
+                          qrels=None if a.qrels == "none" else Path(a.qrels).resolve())
         except ValueError as e:
             sys.exit(f"evaluate: {e}")
     print((run_dir / "table.md").read_text())

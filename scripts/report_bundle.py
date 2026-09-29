@@ -3,7 +3,10 @@
     uv run python scripts/report_bundle.py            # writes ui/public/report.json
 
 Reads only what the manifest eval/report.json names, plus data/recipe.csv for case-study text and the
-before-rewrite word overlap. Python computes; the page formats. Fails hard if a Timing repeat or an Ablation
+before-rewrite word overlap. The runs it names are rescored against the pooled qrels (scripts/rescore.py);
+`single_answer_run` is the Report run as first scored, one right Recipe per query, kept for comparison.
+`check_run` is a fresh run scored with the qrels by evaluate.py itself: it must rank like the rescored Report
+run, and it supplies the Chunk kinds (a rescore can't know which Chunk ranked a judged Recipe). Python computes; the page formats. Fails hard if a Timing repeat or an Ablation
 run's default rows rank anything differently from the Report run, or a label file names an unknown query.
 
 The bundle records a hash of every input file. tests/test_report_bundle.py recomputes them, so a stale bundle
@@ -56,8 +59,11 @@ def read_csv(path: Path) -> list[dict]:
 
 def input_files(manifest: dict) -> list[Path]:
     """Every file the bundle reads, so the freshness test can hash the same list."""
-    runs = [manifest["report_run"], *manifest["timing_repeats"], *manifest["ablation_runs"].values()]
-    files = [MANIFEST, ROOT / "eval" / "queries.jsonl", *(ROOT / p for p in manifest["labels"].values())]
+    runs = [manifest["report_run"], manifest["check_run"], *manifest["timing_repeats"],
+            *manifest["ablation_runs"].values()]
+    single = ROOT / manifest["single_answer_run"]
+    files = [MANIFEST, ROOT / "eval" / "queries.jsonl", ROOT / manifest["qrels"], ROOT / manifest["qrels_check"],
+             single / "metrics.json", single / "per_query.csv", *(ROOT / p for p in manifest["labels"].values())]
     files += [ROOT / r / name for r in runs for name in RUN_FILES if (ROOT / r / name).exists()]
     return files
 
@@ -218,8 +224,11 @@ def recipe_text(row: dict) -> str:
         "directions": row["directions"].strip()})
 
 
-def queries_block(queries: list[dict], edits: dict[str, str], groups: dict[str, str]) -> dict:
+def queries_block(queries: list[dict], edits: dict[str, str], groups: dict[str, str], right: dict[str, set[int]],
+                  checks: dict[str, dict]) -> dict:
     return {q["query_id"]: {"text": q["text"], "recipe_id": q["recipe_id"], "recipe_title": q["recipe_title"],
+                            "right": sorted(right.get(q["query_id"], set()) | {q["recipe_id"]}),
+                            "label_check": checks[q["query_id"]]["label"], "vague": checks[q["query_id"]]["vague"] == "yes",
                             "word_overlap": q["word_overlap"], "hand_rewritten": "edited_from" in q,
                             "edited_from": q.get("edited_from"), "edit_reason": edits.get(q["query_id"]),
                             "error_group": groups.get(q["query_id"])}
@@ -267,6 +276,35 @@ def query_set_block(queries: list[dict], edits: dict[str, str], rows_by_url: dic
         "categories": [{"category": c, "queries": by_cat.get(c, 0), "query_share": by_cat.get(c, 0) / len(queries),
                         "corpus_share": n / total} for c, n in corpus["category_recipes"].items()],
     }
+
+
+def every_miss_ids(per_query: list[dict]) -> set[str]:
+    """Queries no config ranks in its top DEPTH under any Chunking strategy, from per_query.csv rows."""
+    found = {r["query_id"] for r in per_query if r.get("variant", "default") == "default" and r["rank"]}
+    return {r["query_id"] for r in per_query} - found
+
+
+def qrels_block(qrels: list[dict], single_answer: list[dict], check: dict, checks: list[dict],
+                single_misses: set[str], misses: set[str], groups: dict[str, str]) -> dict:
+    """How the pooled answer key was built, the label check, and what the one-Recipe key scored and missed."""
+    judged = [r for r in qrels if r["source"] == "judged"]
+    extra: dict[str, int] = {}
+    for r in judged:
+        if r["relevant"] == "1":
+            extra[r["query_id"]] = extra.get(r["query_id"], 0) + 1
+    rows = [{"config": r["config"], "strategy": r["strategy"], **{m: r[m] for m in metrics.COLUMNS}}
+            for r in single_answer if r.get("variant", "default") == "default"]
+    return {"pool_depth": 5, "judged_pairs": len(judged), "relevant_judged": sum(extra.values()),
+            "queries_with_extra": len(extra), "max_extra": max(extra.values(), default=0),
+            "agreement": {k: check[k] for k in ("pairs", "agree", "kappa")},
+            "label_check": {"good": sum(r["label"] == "good" for r in checks),
+                            "partial": sum(r["label"] == "partial" for r in checks),
+                            "wrong": sum(r["label"] == "wrong" for r in checks),
+                            "vague": sum(r["vague"] == "yes" for r in checks)},
+            "single_answer_every_miss": len(single_misses),
+            "every_miss_found_by_group": {g: sum(groups.get(q) == g for q in single_misses - misses)
+                                          for g in sorted(set(groups.values()))},
+            "single_answer": sorted(rows, key=lambda r: (CONFIGS.index(r["config"]), r["strategy"]))}
 
 
 def cases_block(cases: list[dict], queries: dict, rows_by_url: dict[str, dict], urls: dict[int, str]) -> list[dict]:
@@ -329,10 +367,12 @@ def build(manifest_path: Path = MANIFEST) -> dict:
     report_run = ROOT / manifest["report_run"]
     repeats = [ROOT / p for p in manifest["timing_repeats"]]
     ablations = {arm: ROOT / p for arm, p in manifest["ablation_runs"].items()}
-    missing = [rel(p) for p in [report_run, *repeats, *ablations.values()] if not (p / "per_query.csv").exists()]
+    missing = [rel(p) for p in [report_run, ROOT / manifest["check_run"], *repeats, *ablations.values()]
+               if not (p / "per_query.csv").exists()]
     if missing:
         raise ValueError(f"manifest names runs that aren't there: {', '.join(missing)}")
-    check_ranks(report_run, {**{rel(p): p for p in repeats}, **ablations})
+    check_run = ROOT / manifest["check_run"]
+    check_ranks(report_run, {rel(check_run): check_run, **{rel(p): p for p in repeats}, **ablations})
 
     queries = [json.loads(line) for line in (ROOT / "eval" / "queries.jsonl").read_text().splitlines() if line.strip()]
     qids = {q["query_id"] for q in queries}
@@ -346,20 +386,24 @@ def build(manifest_path: Path = MANIFEST) -> dict:
     tests = significance_block(report_run, ablations)
     latency = repeat_latency([read_json(p / "metrics.json") for p in repeats])
     rows = metrics_block(report_run, latency, read_json(report_run / "significance.json")["intervals"])
-    # The Report run predates best_kind; the first Timing repeat has it and ranks identically (checked above).
+    # The rescored runs only know the kind of the written-from Recipe's Chunk; the check run knows the first right
+    # Recipe's and ranks identically (checked above).
     fails = failures.as_json(failures.analyze(failures.read_query_set(report_run), failures.read_ranks(report_run),
-                                              failures.read_kinds(repeats[0])))
+                                              failures.read_kinds(check_run)))
     per_query, bucket_counts = per_query_block(report_run, fails)
     del fails["buckets"]  # the members live in per_query; the page needs only the counts
     recipes = {int(r["recipe_id"]): r for r in read_csv(report_run / "recipes.csv")}
     urls = {rid: r["url"] for rid, r in recipes.items()}
     rows_by_url = read_recipe_rows({urls[q["recipe_id"]] for q in queries})
     corpus = read_json(report_run / "corpus.json")
-    query_map = queries_block(queries, edits, groups)
+    right = metrics.read_qrels(ROOT / manifest["qrels"])
+    checks = {r["query_id"]: r for r in labels["label_check"]}
+    query_map = queries_block(queries, edits, groups, right, checks)
+    single = ROOT / manifest["single_answer_run"]
 
     return {
         "meta": {"manifest": manifest, "runs": {rel(p): read_json(p / "settings.json")
-                                                 for p in [report_run, *repeats, *ablations.values()]},
+                                                 for p in [report_run, check_run, *repeats, *ablations.values()]},
                  "input_hashes": {rel(p): sha256(p) for p in input_files(manifest)},
                  "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "alpha": ALPHA},
         "metrics": rows,
@@ -371,6 +415,10 @@ def build(manifest_path: Path = MANIFEST) -> dict:
         "queries": query_map,
         "recipes": {str(rid): r["title"] for rid, r in recipes.items()},
         "cases": cases_block(labels["cases"], query_map, rows_by_url, urls),
+        "qrels": qrels_block(read_csv(ROOT / manifest["qrels"]), read_json(single / "metrics.json"),
+                             read_json(ROOT / manifest["qrels_check"]), labels["label_check"],
+                             every_miss_ids(read_csv(single / "per_query.csv")),
+                             every_miss_ids(read_csv(report_run / "per_query.csv")), groups),
         "corpus": corpus,
         "query_set": query_set_block(queries, edits, rows_by_url, urls, corpus),
         "headline": headline_block(rows, tests, fails, bucket_counts),
@@ -392,4 +440,4 @@ if __name__ == "__main__":
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_text(json.dumps(bundle, separators=(",", ":")) + "\n")
     print(f"Written {a.out.relative_to(ROOT)} ({a.out.stat().st_size // 1024} KB, "
-          f"{len(bundle['significance'])} tests in the Holm family)")
+          f"{len(bundle['significance'])} tests in the Holm family)")  # noqa: E501

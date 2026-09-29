@@ -249,3 +249,23 @@ def test_the_command_runs_one_named_arm_and_no_hand_picked_configs():
         evaluate.parse_args(["--arm", "rrf-k-7"])
     with pytest.raises(SystemExit):
         evaluate.parse_args(["--arm", "rrf-k-10", "--configs", "fusion"])
+
+
+def test_a_run_with_qrels_counts_a_judged_recipe_as_right(loaded_db, tmp_path):
+    query_set = tmp_path / "queries.jsonl"
+    query_set.write_text(json.dumps({"query_id": "q001", "text": "steeped tea", "recipe_id": 2,
+                                     "recipe_title": "Toast"}) + "\n")
+    qrels = tmp_path / "qrels.csv"
+    qrels.write_text("query_id,recipe_id,relevant,source,note\nq001,2,1,label,\nq001,3,1,judged,\n")
+    run_dir = evaluate.run(loaded_db, lambda text: "", configs=["sparse"], query_set=query_set, out=tmp_path,
+                           qrels=qrels)
+    (row,) = read_csv(run_dir / "per_query.csv")
+    assert row["recipe_id"] == "2" and row["rank"] == "1"  # Tea, judged right, is Sparse's first hit
+    assert row["best_kind"]  # the kind of Tea's Chunk, the first right Recipe
+    settings = json.loads((run_dir / "settings.json").read_text())
+    assert settings["qrels_sha256"] and json.loads((run_dir / "metrics.json").read_text())[0]["recall@5"] == 1.0
+
+
+def test_the_command_scores_with_the_pooled_qrels_unless_told_not_to():
+    assert evaluate.parse_args([]).qrels == str(evaluate.QRELS)
+    assert evaluate.parse_args(["--qrels", "none"]).qrels == "none"
