@@ -45,3 +45,24 @@ export function armSummary(b: Bundle, arm: string, config: Config) {
   }
 }
 
+
+export const holmWords = (p: Range, alpha: number) =>
+  p.max < alpha ? 'significant after Holm' : p.min < alpha ? 'significant after Holm on some Chunking strategies only' : 'not significant after Holm'
+
+/** Largest R@5 gap between the HNSW and exact-Dense arms over every config and strategy, in queries; null without HNSW. */
+export function hnswExactGap(b: Bundle): number | null {
+  const hn = b.ablations.filter(r => r.arm === 'hnsw-dense')
+  if (!hn.length) return null
+  const gaps = hn.map(x => {
+    const e = b.ablations.find(y => y.arm === 'exact-dense' && y.config === x.config && y.strategy === x.strategy)
+    return e ? Math.round(Math.abs(e.arm_metrics['recall@5'] - x.arm_metrics['recall@5']) * b.metrics[0].queries) : Infinity
+  })
+  return Math.max(...gaps)
+}
+
+/** Strategies where the main-run test of `a` against `b` on `metric` is significant after Holm, and all tested ones. */
+export function holmWhere(b: Bundle, a: Config, other: Config, metric: 'recall@5' | 'mrr') {
+  const ts = b.significance.filter(t => t.arm === null && t.a.config === a && t.b.config === other && t.metric === metric
+    && t.a.strategy === t.b.strategy)
+  return { on: ts.filter(t => t.p_holm < b.meta.alpha).map(t => t.a.strategy), tests: ts }
+}

@@ -22,14 +22,14 @@ const overlapRow = (b: Bundle, c: Config, s: string, g: 'high' | 'low') =>
 /** One small slope chart per strategy: R@5 on high-overlap queries (left) to low-overlap ones (right). */
 function Slopes({ b }: { b: Bundle }) {
   const configs: Config[] = ['sparse', 'dense', 'hybrid']
-  const y = (v: number) => 10 + (1 - (v - 0.3) / 0.6) * 150
+  const y = (v: number) => 10 + (1 - (v - 0.6) / 0.4) * 150
   return (
     <div className="grid min-w-[30rem] grid-cols-3 gap-4">
       {STRATEGIES.map(s => (
         <div key={s}>
           <div className="mb-1 text-xs font-medium text-ink">{STRATEGY_NAME[s]}</div>
           <svg viewBox="0 0 200 190" className="w-full" role="img" aria-label={`${STRATEGY_NAME[s]}: R@5 on high and low overlap queries`}>
-            {[0.3, 0.5, 0.7, 0.9].map(t => (
+            {[0.6, 0.7, 0.8, 0.9, 1].map(t => (
               <g key={t}>
                 <line x1="40" x2="190" y1={y(t)} y2={y(t)} className="stroke-[var(--line)]" />
                 <text x="34" y={y(t) + 4} textAnchor="end" className="fill-[var(--muted)] text-[10px]">{pct(t, 0)}</text>
@@ -94,12 +94,13 @@ function CaseCard({ b, id }: { b: Bundle; id: string }) {
         <Pill title={BUCKET_LONG[c.bucket]}>{BUCKET_SHORT[c.bucket]}</Pill>
       </div>
       <p className="mt-1 text-xs text-muted">
-        <span className="font-mono">{id}</span> · known Recipe <span className="text-ink-soft">{q.recipe_title}</span> · word overlap {q.word_overlap.toFixed(2)}
+        <span className="font-mono">{id}</span> · written from <span className="text-ink-soft">{q.recipe_title}</span>
+        {q.right.length > 1 && ` · ${q.right.length} right Recipes`} · word overlap {q.word_overlap.toFixed(2)}
         {q.hand_rewritten && ' · rewritten by hand'}
       </p>
       <p className="mt-3 max-w-[46rem] text-sm text-ink-soft">{c.why}</p>
       <div className="mt-3 grid gap-4 md:grid-cols-[auto_1fr]">
-        <Table head={['Rank of the Recipe', ...STRATEGIES.map(s => STRATEGY_NAME[s])]} right={[1, 2, 3]}
+        <Table head={['Rank of the first right Recipe', ...STRATEGIES.map(s => STRATEGY_NAME[s])]} right={[1, 2, 3]}
           rows={CONFIGS.map(cf => [<ConfigLabel config={cf} />, ...STRATEGIES.map(s => rank(per(s).ranks[cf]))])} />
         <div className="grid grid-cols-2 gap-3 text-xs">
           {CONFIGS.map(cf => (
@@ -107,7 +108,7 @@ function CaseCard({ b, id }: { b: Bundle; id: string }) {
               <div className="mb-1 font-medium text-ink"><ConfigLabel config={cf} /> <span className="font-normal text-muted">top 5, {STRATEGY_NAME[CASE_STRATEGY]}</span></div>
               <ol className="space-y-0.5">
                 {here.top[cf].slice(0, 5).map((rid, i) => (
-                  <li key={rid} className={`truncate ${rid === q.recipe_id ? 'font-semibold text-ok' : 'text-ink-soft'}`}>
+                  <li key={rid} className={`truncate ${q.right.includes(rid) ? 'font-semibold text-ok' : 'text-ink-soft'}`}>
                     <span className="mr-1 inline-block w-4 text-right text-muted tabular-nums">{i + 1}</span>{b.recipes[String(rid)]}
                   </li>
                 ))}
@@ -132,14 +133,19 @@ function CaseCard({ b, id }: { b: Bundle; id: string }) {
 
 const GROUP_ORDER = ['near-duplicate', 'opaque title', 'lexical trap', 'other']
 const GROUP_MEANING: Record<string, string> = {
-  'near-duplicate': 'The top hits are arguably right, but only one Recipe counts as correct.',
+  'near-duplicate': 'The top hits are arguably right, but the answer key doesn’t count them.',
   'opaque title': 'The Recipe’s name doesn’t describe the dish.',
   'lexical trap': 'One shared word pulls in a different dish.',
   other: 'None of the above.',
 }
 
+/** Queries no config finds under any Chunking strategy. */
+const missedEverywhere = (b: Bundle) =>
+  new Set(Object.keys(b.queries).filter(id => STRATEGIES.every(s => b.per_query.find(r => r.query_id === id && r.strategy === s)!.buckets.includes('every_miss'))))
+
 function ErrorGroups({ b }: { b: Bundle }) {
-  const byGroup = GROUP_ORDER.map(g => ({ g, ids: Object.entries(b.queries).filter(([, q]) => q.error_group === g).map(([id]) => id).sort() }))
+  const missed = missedEverywhere(b)
+  const byGroup = GROUP_ORDER.map(g => ({ g, ids: [...missed].filter(id => b.queries[id].error_group === g).sort() })).filter(x => x.ids.length)
   return (
     <Table head={['Group', 'Queries', 'What it means', 'Example']} right={[1]}
       rows={byGroup.map(({ g, ids }) => {
@@ -160,7 +166,13 @@ export function Errors({ b }: { b: Bundle }) {
     const lo = pct(Math.min(...xs), 0), hi = pct(Math.max(...xs), 0)
     return lo === hi ? lo : `${lo} to ${hi}`
   }
-  const near = Object.values(b.queries).filter(q => q.error_group === 'near-duplicate').length
+  const k = b.qrels
+  const found = k.single_answer_every_miss - h.every_miss_all_strategies
+  const nearAll = Object.values(b.queries).filter(q => q.error_group === 'near-duplicate').length
+  const nearFound = k.every_miss_found_by_group['near-duplicate'] ?? 0
+  const missed = missedEverywhere(b)
+  const left = GROUP_ORDER.map(g => [g, [...missed].filter(id => b.queries[id].error_group === g).length] as const).filter(([, n]) => n)
+  const unlabelled = [...missed].filter(id => !b.queries[id].error_group).length
   const all3 = f.bucket_counts.all_strategies
   const count = (k: Bucket) => {
     const xs = STRATEGIES.map(s => f.bucket_counts.per_strategy[k][s])
@@ -202,7 +214,7 @@ export function Errors({ b }: { b: Bundle }) {
         <P>
           Reranking moves the Recipe down for {h.rerank_hurt.min} to {h.rerank_hurt.max} queries per Chunking strategy, but mostly by a rank or two,
           and it moves {h.rerank_help.min} to {h.rerank_help.max} up, often into the top 5. The net gain is {h.net_into_top5.min} to {h.net_into_top5.max} more
-          queries with the Recipe in the top 5, which is why Hybrid wins despite the hurts. The hurts are also unstable: only {all3.rerank_hurt} queries
+          queries with a right Recipe in the top 5, which is why Hybrid comes out ahead on average despite the hurts. The hurts are also unstable: only {all3.rerank_hurt} queries
           are hurt under all three Chunking strategies, which reads as near-ties flipping.
         </P>
         <NetTable b={b} />
@@ -215,22 +227,25 @@ export function Errors({ b }: { b: Bundle }) {
           this split wasn't tested for significance, so it is supporting evidence, not proof.
         </P>
         <Toggle><KindTable b={b} /></Toggle>
-        <Note>Chunk kinds come from the first Timing repeat, which ranks every query exactly as the Report run does. Queries Hybrid missed are left out of the shares.</Note>
+        <Note>Chunk kinds come from the check run, which ranks every query exactly as the Report run does and records the Chunk that ranked the first right Recipe. Queries Hybrid missed are left out of the shares.</Note>
       </Sub>
 
       <Sub id="s6-4" title="6.4 Case studies">
         <P>
           Five queries, one for each pattern above, picked by hand from the queries that show the pattern under all three Chunking
-          strategies. Top-5 lists are from {STRATEGY_NAME[CASE_STRATEGY]}, the search page's default. The right Recipe is in green.
+          strategies. Top-5 lists are from {STRATEGY_NAME[CASE_STRATEGY]}, the search page's default. Right Recipes are in green.
         </P>
         <div className="space-y-4">{b.cases.map(c => <CaseCard key={c.query_id} b={b} id={c.query_id} />)}</div>
       </Sub>
 
       <Sub id="s6-5" title="6.5 Queries every config misses">
         <P>
-          {h.every_miss_all_strategies} queries have their Recipe outside every config's top 20 under all three Chunking strategies. Each
-          was labelled by hand. {near} of the {h.every_miss_all_strategies} are near-duplicates: the top hits are arguably right, but the Query
-          set counts only one Recipe as correct. Opaque titles are their own cause and not a ground-truth artifact.
+          {h.every_miss_all_strategies} queries have no right Recipe in any config's top 20 under all three Chunking strategies. With one
+          right Recipe per query there were {k.single_answer_every_miss}, each labelled by hand. The pooled key found a right Recipe for {found} of
+          them, including {nearFound === nearAll ? `all ${nearAll}` : `${nearFound} of the ${nearAll}`} near-duplicates, so those were gaps in the answer key,
+          not retrieval failures. The {h.every_miss_all_strategies} left are real misses:
+          {' '}{left.map(([g, n]) => `${n} ${g}${n > 1 ? 's' : ''}`).join(' and ')}{unlabelled ? `, and ${unlabelled} not labelled` : ''}.
+          Their titles or a single shared word point the search at other dishes.
         </P>
         <ErrorGroups b={b} />
       </Sub>

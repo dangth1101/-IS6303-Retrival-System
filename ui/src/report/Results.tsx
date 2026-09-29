@@ -1,6 +1,7 @@
 // §4 Main results: configs, Chunking strategy, latency vs accuracy.
 import { CFG, CONFIGS, dec, linear, log, METRIC_NAME, ms, numRange, pct, ptsRange, STRATEGIES, STRATEGY_NAME, times } from './format'
 import { Axis, ConfigLabel, Figure, Forest, Grid, Legend, Marker, Note, P, Section, Sub, Table, Toggle } from './parts'
+import { holmWhere, range } from './data'
 import type { Bundle, Config, Metric, MetricRow } from './types'
 
 const TABLE_METRICS: Metric[] = ['recall@5', 'recall@10', 'recall@20', 'mrr', 'ndcg@5', 'ndcg@10']
@@ -27,8 +28,8 @@ function MainTable({ b }: { b: Bundle }) {
 
 /** R@5 → R@20 per config and strategy: how much each config finds versus how much it puts on top. */
 function Dumbbells({ b }: { b: Bundle }) {
-  const ticks = [0.5, 0.6, 0.7, 0.8, 0.9]
-  const at = linear(0.5, 0.9)
+  const ticks = [0.8, 0.85, 0.9, 0.95, 1]
+  const at = linear(0.8, 1)
   return (
     <div className="min-w-[32rem] text-xs">
       <div className="grid grid-cols-[9rem_1fr] gap-x-3"><span /><Axis ticks={ticks} at={at} fmt={v => pct(v, 0)} /></div>
@@ -58,9 +59,9 @@ function Dumbbells({ b }: { b: Bundle }) {
   )
 }
 
-const R5_TICKS = [0.5, 0.6, 0.7, 0.8]
+const R5_TICKS = [0.75, 0.8, 0.85, 0.9, 0.95, 1]
 const LAT_TICKS = [10, 30, 100, 300, 1000, 3000]
-const x5 = linear(0.5, 0.8)
+const x5 = linear(0.75, 1)
 const xl = log(10, 3000)
 
 /** §4.3 "aligned panels": R@5 with its CI next to latency (median p50, p50 range, line to p95), one row each. */
@@ -172,15 +173,28 @@ export function Results({ b }: { b: Bundle }) {
     return `the ${name} gain is significant after Holm ${where} (raw p at most ${raw.toFixed(3)})`
   }).join(', and ')
   const fewest = STRATEGIES.reduce((a, s) => (chunks(b, s) < chunks(b, a) ? s : a))
+  const r5Diffs = (a: Config, o: Config) => range(holmWhere(b, a, o, 'recall@5').tests.map(t => t.diff))
+  const sd = h.sparse_vs_dense_r5
+  const sparseDense = sd.min > 0 ? `Sparse ahead by ${ptsRange(sd)} points of R@5`
+    : sd.max < 0 ? `Dense ahead by ${ptsRange({ min: -sd.max, max: -sd.min })} points of R@5`
+      : `within ${ptsRange({ min: 0, max: Math.max(-sd.min, sd.max) })} points of each other on R@5`
+  const hybridOn = holmWhere(b, 'hybrid', 'fusion', 'recall@5').on
+  const hybridSig = hybridOn.length === STRATEGIES.length ? 'significant after Holm under every Chunking strategy'
+    : hybridOn.length ? `significant after Holm only under ${hybridOn.map(s => STRATEGY_NAME[s]).join(' and ')}` : 'not significant after Holm under any Chunking strategy'
   return (
     <Section id="s4" title="4. Main results">
       <Sub id="s4-1" title="4.1 Configs">
         <P>
-          Fusion finds more, and Reranking puts it on top. Fusing Sparse and Dense raises R@20 by {ptsRange(h.fusion_vs_sparse_r20)} points
-          over Sparse alone and {ptsRange(h.fusion_vs_dense_r20)} over Dense alone, but it barely moves R@5. Reranking the fused
-          list then adds {ptsRange(h.hybrid_vs_fusion_r5)} points of R@5 and {numRange(h.hybrid_vs_fusion_mrr, v => v.toFixed(3))} of MRR:
- {sigText}. Sparse and Dense are close overall, Sparse ahead by {ptsRange(h.sparse_vs_dense_r5)} points
-          of R@5, but they miss different queries (Section 6).
+          Each stage adds a few points and none adds many. Fusing Sparse and Dense raises R@5 by {ptsRange(r5Diffs('fusion', 'sparse'))} points
+          over Sparse alone and {ptsRange(r5Diffs('fusion', 'dense'))} over Dense alone, and R@20 by {ptsRange(h.fusion_vs_sparse_r20)} and {ptsRange(h.fusion_vs_dense_r20)}.
+          Reranking the fused list then adds {ptsRange(h.hybrid_vs_fusion_r5)} points of R@5 and {numRange(h.hybrid_vs_fusion_mrr, v => v.toFixed(3))} of MRR:
+          {' '}{sigText}.{' '}
+          {hybridOn.length === STRATEGIES.length
+            ? 'Hybrid is the most accurate config, and its lead holds up under every Chunking strategy.'
+            : hybridOn.length
+              ? `So Hybrid's lead holds up only under ${hybridOn.map(s => STRATEGY_NAME[s]).join(' and ')}. Section 5.1 shows a reranker whose gain is clearer.`
+              : "So Hybrid is the most accurate config on average, but with the served reranker its lead can't be told apart from chance at this sample size. Section 5.1 shows a reranker whose gain can."}
+          {' '}Sparse and Dense are close overall, {sparseDense}, but they miss different queries (Section 6).
         </P>
         <MainTable b={b} />
         <Note>Recall in percent. Green rows have the highest R@5 under their Chunking strategy. CIs are 95% bootstrap intervals, not adjusted.</Note>
@@ -214,7 +228,7 @@ export function Results({ b }: { b: Bundle }) {
         <P>
           Hybrid takes about {times(ratio.min)} to {times(ratio.max)} times as long per query as the Fusion baseline
           ({numRange(h.hybrid_p50, ms)} ms against {numRange(h.fusion_p50, ms)} ms median p50) and puts the right Recipe in the top 5 for
-          {' '}{ptsRange(h.hybrid_vs_fusion_r5)} more queries in every 100. Nearly all of the extra time is Reranking, {ptsRange(h.rerank_share)}% of
+          {' '}{ptsRange(h.hybrid_vs_fusion_r5)} more queries in every 100 ({hybridSig}). Nearly all of the extra time is Reranking, {ptsRange(h.rerank_share)}% of
           Hybrid's p50. The other three configs answer in under 100 ms. Section 5 looks at cheaper rerankers, and Section 7 says
           when the trade is worth it.
         </P>

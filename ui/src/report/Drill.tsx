@@ -63,16 +63,18 @@ function Detail({ b, row, strategy }: { b: Bundle; row: PerQuery; strategy: stri
         <p className="text-base font-medium leading-snug text-ink">“{q.text}”</p>
         <dl className="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1 text-xs">
           <dt className="text-muted">Query id</dt><dd className="font-mono text-ink-soft">{row.query_id}</dd>
-          <dt className="text-muted">Known Recipe</dt><dd className="font-medium text-ink">{q.recipe_title}</dd>
+          <dt className="text-muted">Written from</dt><dd className="font-medium text-ink">{q.recipe_title}</dd>
+          <dt className="text-muted">Right Recipes</dt><dd className="text-ink-soft">{q.right.length === 1 ? 'only that one' : `${q.right.length}, including that one`}</dd>
+          {q.label_check !== 'good' && <><dt className="text-muted">Label check</dt><dd className="text-ink-soft">one detail of the query doesn’t match that Recipe</dd></>}
           <dt className="text-muted">Word overlap</dt><dd className="tabular-nums text-ink-soft">{q.word_overlap.toFixed(2)} ({q.word_overlap >= b.failures.high_overlap ? 'high' : 'low'})</dd>
           {q.hand_rewritten && <><dt className="text-muted">Rewritten by hand</dt><dd className="text-ink-soft">{q.edit_reason ?? 'yes'}; the model wrote “{q.edited_from}”</dd></>}
-          {q.error_group && <><dt className="text-muted">Miss group</dt><dd className="text-ink-soft">{q.error_group}</dd></>}
+          {q.error_group && row.buckets.includes('every_miss') && <><dt className="text-muted">Miss group</dt><dd className="text-ink-soft">{q.error_group}</dd></>}
           {row.buckets.length > 0 && <><dt className="text-muted">Patterns</dt><dd className="flex flex-wrap gap-1">{row.buckets.map(k => (
             <span key={k} title={BUCKET_LONG[k]} className="rounded-full border border-line px-2 py-0.5 text-ink-soft">{BUCKET_SHORT[k]}</span>))}</dd></>}
         </dl>
       </div>
       <table className="text-xs tabular-nums">
-        <thead className="text-muted"><tr><th className="py-1 pr-6 text-left font-normal">Rank of the known Recipe</th>
+        <thead className="text-muted"><tr><th className="py-1 pr-6 text-left font-normal">Rank of the first right Recipe</th>
           {CONFIGS.map(c => <th key={c} className="px-2 text-right font-normal">{CFG[c].name}</th>)}</tr></thead>
         <tbody>{STRATEGIES.map(s => {
           const r = b.per_query.find(p => p.strategy === s && p.query_id === row.query_id)!
@@ -85,13 +87,13 @@ function Detail({ b, row, strategy }: { b: Bundle; row: PerQuery; strategy: stri
         })}</tbody>
       </table>
       <div>
-        <h4 className="mb-2 text-xs text-muted">Top 20 on {STRATEGY_NAME[strategy]}. The known Recipe is highlighted.</h4>
+        <h4 className="mb-2 text-xs text-muted">Top 20 on {STRATEGY_NAME[strategy]}. Right Recipes are highlighted.</h4>
         <div className="grid grid-cols-1 gap-x-4 gap-y-4 text-xs sm:grid-cols-2">
           {CONFIGS.map(c => (
             <ol key={c} className="space-y-0.5">
               <li className="mb-1 flex items-center gap-1.5 font-medium text-ink"><svg width="10" height="10" aria-hidden><Marker config={c} x={5} y={5} size={7} /></svg>{CFG[c].name}</li>
               {row.top[c].map((id, i) => (
-                <li key={i} title={b.recipes[String(id)]} className={`truncate rounded px-1 ${id === q.recipe_id ? 'bg-ok/15 font-semibold text-ink' : 'text-ink-soft'}`}>
+                <li key={i} title={b.recipes[String(id)]} className={`truncate rounded px-1 ${q.right.includes(id) ? 'bg-ok/15 font-semibold text-ink' : 'text-ink-soft'}`}>
                   <span className="mr-2 inline-block w-5 text-right text-muted tabular-nums">{i + 1}</span>{b.recipes[String(id)] ?? id}
                 </li>
               ))}
@@ -129,7 +131,7 @@ export function Drill({ b }: { b: Bundle }) {
 
   return (
     <Section id="appendix" title="Appendix: all queries">
-      <P>Pick a query to see where each config ranked its Recipe. A dash means the Recipe wasn’t in the top 20, and ranks 1 to 5 are bold.</P>
+      <P>Pick a query to see where each config ranked its first right Recipe. A dash means no right Recipe was in the top 20, and ranks 1 to 5 are bold.</P>
       <div className="sticky top-0 z-10 space-y-2 rounded-md border border-line bg-page p-3 text-xs">
         <Field label="Chunking strategy">
           <Segmented label="Chunking strategy" value={f.strategy} onChange={v => set({ strategy: v })} options={STRATEGIES.map(s => [s, STRATEGY_NAME[s]] as [string, string])} />

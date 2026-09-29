@@ -1,12 +1,8 @@
 // §5 Ablation: one Ablation run per arm, each arm compared with its default inside the same run.
 import { CFG, dec, int, ms, numRange, pct, pts, pValue, STRATEGIES, STRATEGY_NAME, times } from './format'
 import { ConfigLabel, Figure, Forest, Note, P, Section, Sub, Table } from './parts'
-import { ARM_NAME, armSummary, range, rows } from './data'
+import { ARM_NAME, armSummary, hnswExactGap, holmWords, range, rows } from './data'
 import type { AblationRow, Bundle, Config, Range } from './types'
-
-const significant = (p: Range, alpha: number) => p.max < alpha
-const holmWords = (p: Range, alpha: number) =>
-  significant(p, alpha) ? 'significant after Holm' : p.min < alpha ? 'significant after Holm on some Chunking strategies only' : 'not significant after Holm'
 
 function ArmForest({ b, arms, config, metric }: { b: Bundle; arms: string[]; config: Config; metric: 'recall@5' | 'mrr' }) {
   const items = arms.flatMap(arm => rows(b, arm, config).flatMap(r => {
@@ -14,7 +10,7 @@ function ArmForest({ b, arms, config, metric }: { b: Bundle; arms: string[]; con
     return t ? [{ key: arm + r.strategy, label: <>{ARM_NAME[arm]} <span className="text-muted">· {STRATEGY_NAME[r.strategy]}</span></>,
       diff: t.diff, lo: t.ci_lo, hi: t.ci_hi, p: t.p_holm, color: CFG[config].color, extra: `${times(r.latency_ratio.total)}×` }] : []
   }))
-  const ticks = metric === 'mrr' ? [-0.05, 0, 0.05, 0.1, 0.15] : [-0.1, -0.05, 0, 0.05, 0.1]
+  const ticks = metric === 'mrr' ? [-0.05, 0, 0.05, 0.1, 0.15, 0.2] : [-0.1, -0.05, 0, 0.05, 0.1]
   return <Forest items={items} ticks={ticks} unit={metric === 'mrr' ? 'mrr' : 'pts'} extraHead="latency" />
 }
 
@@ -79,10 +75,7 @@ export function Ablation({ b }: { b: Bundle }) {
   const report = b.meta.runs[b.meta.manifest.report_run] as Record<string, unknown>
   const queries = b.metrics[0].queries
   const idx = hasHnsw ? rows(b, 'hnsw-dense', 'dense')[0]?.hnsw_indexes : null
-  const hnswMatchesExact = hasHnsw && b.ablations.filter(x => x.arm === 'hnsw-dense').every(x => {
-    const e = b.ablations.find(y => y.arm === 'exact-dense' && y.config === x.config && y.strategy === x.strategy)
-    return e && Math.abs(e.arm_metrics['recall@5'] - x.arm_metrics['recall@5']) < 1e-9
-  })
+  const hnswGap = hnswExactGap(b)
   const denseStage = (arm: string) => range(rows(b, arm, 'dense').map(r => r.latency_same_run.arm.dense))
   const r = (x: Range) => numRange(x, v => pts(v))
   const m = (x: Range) => numRange(x, v => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(3))
@@ -134,9 +127,11 @@ export function Ablation({ b }: { b: Bundle }) {
             ? <> pgvector HNSW (m 16, ef_construction 64, ef_search 200) changes Dense's R@5 by {r(hnswDense.r5)} points against the served index
               and Hybrid's by {r(hnswHybrid.r5)}. Its Dense stage takes {numRange(range(rows(b, 'hnsw-dense', 'dense').map(x => x.latency_ratio.dense)), times)}× the
               served index's time ({numRange(denseStage('hnsw-dense'), ms)} ms p50 in that run).
-              {hnswMatchesExact
+              {hnswGap === 0
                 ? ' At ef_search 200 its R@5 equals exact search on every row (MRR is within a few thousandths), so on this corpus HNSW gets exact-quality results in less time than the served index gets approximate ones.'
-                : ''}</>
+                : hnswGap != null && hnswGap <= 2
+                  ? ` At ef_search 200 its R@5 is within ${hnswGap} ${hnswGap === 1 ? 'query' : 'queries'} of exact search on every row, so on this corpus HNSW gets near-exact results in less time than the served index gets approximate ones.`
+                  : ''}</>
             : ' The pgvector HNSW arm has not been added to the manifest yet.'}
         </P>
         <Figure caption={`R@5 in percent and MRR for each Dense index. "Served" is the default side of the exact-Dense Ablation run${hasHnsw ? ', which ranks identically to the HNSW run\'s default' : ''}. Dense time is the arm's Dense stage p50 as a multiple of the served index's, same run.`}>

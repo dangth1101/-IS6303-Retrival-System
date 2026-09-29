@@ -8,7 +8,7 @@ Terms like Chunk, Chunking strategy and Fusion baseline are defined in [CONTEXT.
 
 ## Results
 
-Report run [`eval/runs/20260928-122309`](eval/runs/20260928-122309/table.md) on commit `466b46a`: 298 queries, four configs, three Chunking strategies. The full table with R@5/10/20, MRR, nDCG@5/10 and latency is [table.md](eval/runs/20260928-122309/table.md). Latency in the report comes from three Timing repeats rather than this single run.
+Report run `eval/runs/20260928-122309` on commit `466b46a`: 298 queries, four configs, three Chunking strategies, scored against the pooled answer key in `eval/qrels.csv`. The full table with R@5/10/20, MRR, nDCG@5/10 and latency is [eval/pooled/20260928-122309/table.md](eval/pooled/20260928-122309/table.md). The same run scored with one right Recipe per query is [eval/runs/20260928-122309/table.md](eval/runs/20260928-122309/table.md); [ADR 0004](docs/adr/0004-score-against-a-pooled-answer-key.md) explains the change. Latency in the report comes from three Timing repeats rather than this single run.
 
 ## Report
 
@@ -26,7 +26,7 @@ To rebuild the bundle after changing a run or a label file (needs `data/recipe.c
 uv run python scripts/report_bundle.py
 ```
 
-It reads only what the manifest `eval/report.json` names and fails if any Timing repeat or Ablation run ranks a query differently from the Report run. A test fails when the committed bundle is older than its inputs.
+It reads only what the manifest `eval/report.json` names and fails if the check run, a Timing repeat or an Ablation run ranks a query differently from the Report run. A test fails when the committed bundle is older than its inputs.
 
 ## Demo
 
@@ -136,7 +136,7 @@ Runs every query through four configs under every loaded Chunking strategy:
 
 A full run (298 queries × 4 configs × 3 strategies) took about 11 minutes. Reranking is most of it.
 
-Each Evaluation run prints a markdown table and writes `eval/runs/<timestamp>/` with `settings.json`, `metrics.json`, `metrics.csv`, `per_query.csv` (ranks, latencies and the winning Chunk kind per query), `table.md`, `recipes.csv` (titles of every ranked Recipe and every query's known Recipe) and `corpus.json` (what was searched).
+Each Evaluation run scores against the answer key `eval/qrels.csv`: a query counts at the rank of its first right Recipe. `--qrels none` scores only the Recipe each query was written from. It prints a markdown table and writes `eval/runs/<timestamp>/` with `settings.json`, `metrics.json`, `metrics.csv`, `per_query.csv` (ranks, latencies and the winning Chunk kind per query), `table.md`, `recipes.csv` (titles of every ranked Recipe and every query's known Recipe) and `corpus.json` (what was searched).
 
 An Ablation run changes one setting against its default in the same run. The arms are named in `ARMS` in `scripts/evaluate.py`:
 
@@ -149,7 +149,7 @@ The `hnsw-dense` arm needs its indexes first, and they are dropped after:
 ```sh
 docker exec -i recipe-paradedb psql -U recipe -d recipe -v ON_ERROR_STOP=1 < sql/ablation/hnsw.sql
 uv run scripts/evaluate.py --arm hnsw-dense
-uv run scripts/runcheck.py eval/runs/20260928-122309 eval/runs/<the new run>
+uv run scripts/runcheck.py eval/pooled/20260928-122309 eval/runs/<the new run>
 docker exec -i recipe-paradedb psql -U recipe -d recipe < sql/ablation/hnsw-drop.sql
 ```
 
@@ -177,8 +177,16 @@ It also writes `failures.json`, which the report bundle reads.
 
 ```sh
 uv run scripts/significance.py eval/runs/<timestamp>   # paired bootstrap, writes significance.json
-uv run scripts/runcheck.py eval/runs/20260928-122309 eval/runs/<timestamp>   # ranks must match the Report run
+uv run scripts/runcheck.py eval/pooled/20260928-122309 eval/runs/<timestamp>   # ranks must match the Report run
 ```
+
+The runs the report names were made before the answer key existed. `rescore.py` scores a saved run against it without searching again and writes `eval/pooled/<timestamp>/`, significance and failures included:
+
+```sh
+uv run python scripts/rescore.py eval/runs/<timestamp>
+```
+
+A new config or arm can put Recipes in its top 5 that were never judged; judge them into `eval/qrels.csv` before comparing (ADR 0004).
 
 `significance.py` stores raw p only; the report bundle applies Holm across every run the manifest names.
 

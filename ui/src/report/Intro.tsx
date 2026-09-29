@@ -1,5 +1,5 @@
 // §1 Problem and scope, §2 Dataset, §3 Evaluation setup.
-import { int, pct, STRATEGIES, STRATEGY_NAME } from './format'
+import { CONFIGS, dec, int, pct, STRATEGIES, STRATEGY_NAME } from './format'
 import { Bars, ConfigLabel, Figure, Note, P, Section, Stat, Sub, Table, Toggle } from './parts'
 import { reportSettings } from './data'
 import type { Bundle, Settings } from './types'
@@ -189,9 +189,9 @@ export function Dataset({ b }: { b: Bundle }) {
       <Sub title="2.3 Query set">
         <P>
           The dataset has no queries, so {q.model} wrote one per Recipe for a sample of {q.sampled} Recipes, stratified by category
-          (seed {q.seed}). {q.skipped} Recipes were skipped after three bad tries, which leaves {q.queries}. Each query has exactly
-          one correct Recipe, the one it was written from. Every query was then read against its Recipe, and {q.rewritten} were
-          rewritten by hand.
+          (seed {q.seed}). {q.skipped} Recipes were skipped after three bad tries, which leaves {q.queries}. Every query was then
+          read against its Recipe, and {q.rewritten} were rewritten by hand. A query is written from one Recipe, but other Recipes
+          can answer it just as well; Section 3.1 describes how those were found.
         </P>
         <Toggle label="the prompt">
           <pre className="whitespace-pre-wrap rounded-md border border-line bg-page p-3 font-mono text-[11px] leading-relaxed text-ink-soft">{q.prompt}</pre>
@@ -215,8 +215,8 @@ export function Dataset({ b }: { b: Bundle }) {
       <Sub title="2.4 Limits of the ground truth">
         <P>
           The queries are synthetic. An LLM that just read the Recipe tends to reuse its words, so these numbers flatter Sparse,
-          which matches words. Section 6.2 measures by how much. Each query also has one correct Recipe, so a near-duplicate
-          Recipe counts as a miss even when a person would accept it. A list with fewer than 20 unique Recipes counts its empty
+          which matches words. Section 6.2 measures by how much. The other right Recipes were judged by an LLM too, and only
+          where some config ranked them in its top 5 (Section 3.1). A list with fewer than 20 unique Recipes counts its empty
           places as misses.
         </P>
       </Sub>
@@ -240,12 +240,13 @@ export function Setup({ b }: { b: Bundle }) {
     <Section id="s3" title="3. Evaluation setup">
       <P>
         Every query runs through the four configs under each of the three Chunking strategies. A config's result list is cut
-        to its top {s.depth} unique Recipes, and the Recipe the query was written from is the only correct answer. Recall@k is
-        the share of queries with that Recipe in the top k. MRR averages 1 / its rank (0 if missing), and nDCG@k discounts a hit by
-        its position. R@5 is the headline, because the search page shows five results by default; MRR comes second.
+        to its top {s.depth} unique Recipes, and a query is scored at the rank of its first right Recipe (Section 3.1). Recall@k is
+        the share of queries with a right Recipe in the top k. MRR averages 1 / that rank (0 if there is none), and nDCG@k
+        discounts the hit by its position. R@5 is the headline, because the search page shows five results by default; MRR comes second.
       </P>
       <P>
-        Ranks come from the Report run on commit {s.git_commit}. Latency comes from three Timing repeats of the same run on
+        Ranks come from the Report run on commit {s.git_commit}, rescored against the pooled answer key without searching
+        again. A fresh run that scores with the answer key itself ranks every query identically. Latency comes from three Timing repeats of the same run on
         commit {commits}, which added a rotating config order, so no config always runs on a cache the others warmed. Their
         ranks were checked to be identical to the Report run's before any latency was used. Each number is the median over the
         three repeats, with the lowest and highest shown as a range.
@@ -268,6 +269,45 @@ export function Setup({ b }: { b: Bundle }) {
       <Toggle label="all settings">
         <Table head={['Setting', 'Value']} rows={SETTING_ROWS.filter(([k]) => k in s).map(([k, label]) => [label, String(s[k])])} />
       </Toggle>
+      <AnswerKey b={b} />
     </Section>
+  )
+}
+
+function AnswerKey({ b }: { b: Bundle }) {
+  const k = b.qrels, n = b.query_set.queries
+  const single = (c: string, st: string) => k.single_answer.find(r => r.config === c && r.strategy === st)!
+  const pooled = (c: string, st: string) => b.metrics.find(r => r.config === c && r.strategy === st)!
+  return (
+    <Sub id="s3-1" title="3.1 The answer key">
+      <P>
+        The Query set gives each query one right Recipe, the one it was written from. That undercounts, because many queries fit
+        other Recipes just as well. So the answer key was pooled: the top {k.pool_depth} Recipes of every config, Chunking strategy
+        and Ablation arm went into one pool per query, and an LLM (Claude) judged each against the query with one strict rule. A
+        Recipe is right if someone typing the query would be as happy with it as with the written-from Recipe: it has the dish, the
+        key ingredients, the method and words like spicy or no-bake. Of {int(k.judged_pairs)} judged pairs, {k.relevant_judged} were
+        right, so {k.queries_with_extra} of the {n} queries have more than one right Recipe (at most {k.max_extra + 1}).
+      </P>
+      <P>
+        Two checks back it. A blind re-judge of {k.agreement.pairs} pairs agreed on {k.agreement.agree} (Cohen's κ {k.agreement.kappa.toFixed(2)}),
+        with the disagreements split both ways. And every written-from Recipe was read against its query: {k.label_check.good} fit
+        it fully, {k.label_check.partial} get one detail wrong but stay the closest Recipe, and {k.label_check.wrong} are
+        wrong. {k.label_check.vague} queries are generic enough that many Recipes would fit.
+      </P>
+      <P>
+        The pool is fair across configs, because every config's top {k.pool_depth} is in it. It is complete only to
+        rank {k.pool_depth}: a right Recipe that no config ranked that high was never judged and counts as wrong. So R@5 is exact,
+        while R@10, R@20 and MRR are slight underestimates. Relevance is right or wrong, with no partial credit.
+      </P>
+      <Figure caption="The Report run scored both ways. Every other number in this report uses the pooled key.">
+        <Table
+          head={['Chunking strategy', 'Config', 'R@5 one Recipe', 'R@5 pooled', 'MRR one Recipe', 'MRR pooled']}
+          right={[2, 3, 4, 5]} groupStart={[0, 4, 8]}
+          rows={STRATEGIES.flatMap(st => CONFIGS.map((c, i) => [
+            i === 0 ? STRATEGY_NAME[st] : '', <ConfigLabel config={c} />,
+            pct(single(c, st)['recall@5']), pct(pooled(c, st)['recall@5']), dec(single(c, st).mrr), dec(pooled(c, st).mrr)]))}
+        />
+      </Figure>
+    </Sub>
   )
 }

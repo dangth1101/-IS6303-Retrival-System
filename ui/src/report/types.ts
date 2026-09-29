@@ -73,6 +73,9 @@ export type Query = {
   text: string
   recipe_id: number
   recipe_title: string
+  right: number[]  // every right Recipe in the pooled qrels, the written-from one included
+  label_check: 'good' | 'partial' | 'wrong'
+  vague: boolean
   word_overlap: number
   hand_rewritten: boolean
   edited_from: string | null
@@ -98,7 +101,10 @@ export type Settings = Record<string, unknown> & {
 
 export type Bundle = {
   meta: {
-    manifest: { report_run: string; timing_repeats: string[]; ablation_runs: Record<string, string>; labels: Record<string, string> }
+    manifest: {
+      report_run: string; check_run: string; single_answer_run: string; qrels: string; qrels_check: string
+      timing_repeats: string[]; ablation_runs: Record<string, string>; labels: Record<string, string>
+    }
     runs: Record<string, Settings>
     input_hashes: Record<string, string>
     built_at: string
@@ -122,6 +128,18 @@ export type Bundle = {
   queries: Record<string, Query>
   recipes: Record<string, string>
   cases: Case[]
+  qrels: {
+    pool_depth: number
+    judged_pairs: number
+    relevant_judged: number
+    queries_with_extra: number
+    max_extra: number
+    agreement: { pairs: number; agree: number; kappa: number }
+    label_check: { good: number; partial: number; wrong: number; vague: number }
+    single_answer_every_miss: number
+    every_miss_found_by_group: Record<string, number>
+    single_answer: (Record<Metric, number> & { config: Config; strategy: string })[]
+  }
   corpus: {
     recipes: number
     categories: number

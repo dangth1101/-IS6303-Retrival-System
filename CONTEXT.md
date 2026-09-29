@@ -51,8 +51,12 @@ Hybrid retrieval without Reranking: the same merged candidates Hybrid retrieval 
 _Avoid_: Hybrid RRF, RRF-only search
 
 **Query set**:
-The fixed list of test queries in the repo. Each was written from one Recipe, and that Recipe is its only correct answer.
+The fixed list of test queries in the repo. Each was written from one Recipe. Which Recipes count as right is the Answer key's job, not the Query set's.
 _Avoid_: Test set, qrels, benchmark
+
+**Answer key**:
+Every judged (query, Recipe) pair, right or not, in `eval/qrels.csv`. A query's right Recipes are the one it was written from plus every Recipe judged as good an answer. The judged Recipes come from pooling the top 5 of every config, Chunking strategy and Ablation arm. A query is scored at the rank of its first right Recipe.
+_Avoid_: Ground truth, labels (qrels only as the file name)
 
 **Evaluation run**:
 One scoring of the retrieval configs (Sparse, Dense, Fusion baseline, Hybrid) on the Query set under the chosen Chunking strategies, kept as one timestamped folder of settings, metrics and per-query ranks.
