@@ -57,7 +57,7 @@ ollama pull nomic-embed-text
 ollama pull qwen2.5:7b   # optional, see step 4
 ```
 
-Two Hugging Face models download on first use, no account needed: `bert-base-uncased` (tokenizer for the `fixed` strategy) and `BAAI/bge-reranker-base` (~1 GB, the reranker used by Hybrid).
+Two Hugging Face models download on first use, no account needed: `bert-base-uncased` (tokenizer for the `fixed` strategy) and `mixedbread-ai/mxbai-rerank-base-v1` (~0.7 GB, the reranker used by Hybrid).
 
 Every setting has a default that matches `docker-compose.yml`. Override with env vars if yours differ: `DATABASE_URL`, `OLLAMA_URL`, `EMBED_MODEL`, `RERANK_MODEL`, `HYBRID_CANDIDATES`, `RERANK_TOP` (all in `api/config.py`) and `QUERY_MODEL` (in `scripts/make_queries.py`).
 
@@ -125,6 +125,12 @@ The API isn't needed for the eval, which calls the retrieval code directly.
 
 ```sh
 uv run scripts/evaluate.py
+```
+
+The Report run was measured with `BAAI/bge-reranker-base`, which Hybrid served until the reranker ablation picked `mxbai-rerank-base-v1`. To reproduce the Report run's Hybrid numbers, run with the old reranker:
+
+```sh
+RERANK_MODEL=BAAI/bge-reranker-base uv run scripts/evaluate.py
 ```
 
 Runs every query through four configs under every loaded Chunking strategy:
