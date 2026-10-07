@@ -1,6 +1,8 @@
 {
   "report_run": "eval/pooled/20260929-182256",
   "check_run": "eval/runs/20260929-184605",
+  "rerank_run": "eval/pooled/20261006-224100",
+  "rerank_check_run": "eval/runs/20261006-224100",
   "single_answer_run": "eval/runs/20260929-182256",
   "qrels": "eval/qrels.csv",
   "qrels_check": "eval/qrels_check.json",
